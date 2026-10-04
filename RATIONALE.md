@@ -8,13 +8,15 @@ Existing terminal and editor workflows make files accessible, but feedback often
 
 Review reduces this translation. The user comments where they are looking, and the tool carries the relevant context into feedback for the agent.
 
-## Why a browser GUI
+## Why a TUI alongside the browser
 
-The target user is technically capable and already comfortable with terminal commands. They do not need another environment to manage their development workflow. They do need a convenient surface for reading formatted documents, inspecting changes, and attaching comments.
+Engineers working with agents often spend most of their time in the terminal: invoking agents, inspecting output, and running checks. A terminal UI lets them review files and attach comments within that workflow. It is a first-class review surface alongside the browser GUI.
 
-A command provides the entry point; the browser provides the GUI. This combines familiar file-oriented invocation with selection, rendering, and navigation that are awkward in a terminal.
+A command provides the entry point to either interface. The TUI should use simple rendering, clear text and location references, and direct keyboard interaction. It should make selecting a passage, writing a comment, and revisiting feedback straightforward.
 
-The interface should earn its place through useful interactions and low friction. Technical users should be able to open a file and understand the review flow immediately.
+The browser remains useful for formatted documents, pointer selection, and later visual content such as images and PDFs. Richer rendering should earn its place by making content easier to inspect or comments more precise.
+
+Both interfaces follow the same principles: easy-to-consume information, minimal controls and decoration, and a focus on commenting. Users should be able to open a file and understand the review flow immediately. The surfaces share comment context and portable feedback so choosing one does not change what the agent receives.
 
 ## Why ordinary files remain central
 
@@ -36,7 +38,7 @@ For example, a user might invoke:
 review some-doc.md
 ```
 
-They review the document in the browser, attach comments, and save a feedback JSON file in the directory where they invoked the command. They then tell their existing agent to read that file and address the feedback.
+They review the document in the terminal or browser, attach comments, and save a feedback JSON file in the directory where they invoked the command. They then tell their existing agent to read that file and address the feedback.
 
 This example establishes the desired simplicity. It does not fix the output filename, schema, or exact command options. The save location should be clear and controllable, and saving feedback must not silently overwrite unrelated files.
 
@@ -46,7 +48,7 @@ Agent-specific integrations may later remove repeated steps. The file-based work
 
 Text documents cover a broad range of useful work: Markdown, plain text, plans, specifications, source code, structured text such as JSON or YAML, and logs. The first version should make this family of content comfortable to inspect and comment on.
 
-Rendered documents and source views serve different purposes. A plan benefits from readable formatting; code and logs benefit from clear line references. Comments should work with the presentation the user is reviewing.
+Rendered documents and source views serve different purposes. A plan benefits from readable formatting; code and logs benefit from clear line references. The TUI should present this content with simple, readable formatting and clear targets. The browser may offer richer document rendering while keeping the same focus on readability and commenting. Comments should work with the presentation the user is reviewing.
 
 Git diffs belong in the early scope because users often need to judge what changed, rather than reread an entire file. Git supplies comparison context; it should not be required for reviewing a standalone document.
 
@@ -54,7 +56,7 @@ Images and PDFs extend the same interaction later. They introduce different view
 
 ## Why review stays separate from editing
 
-The user already has tools for editing files and running agents. Adding code editing, a terminal, agent execution, or project management would increase the setup and interface burden without proving the core idea.
+The user already has tools for editing files and running agents. Adding code editing, an embedded shell, agent execution, or project management would increase the setup and interface burden without proving the core idea.
 
 Review should make it easier to inspect a result and express a correction. It does not need to perform that correction itself.
 
@@ -68,7 +70,7 @@ The details of version retention and comment handling remain design work. They s
 
 ## What to sharpen before implementation
 
-The next design work should settle the smallest complete text review interaction: how users select a target, add and revisit comments, save feedback, and inspect a revision. It should also settle how multiple files and Git diffs fit into that same flow.
+The next design work should settle the smallest complete text review interaction: how users select a target, add and revisit comments, save feedback, and inspect a revision. It should settle that interaction in both the TUI and browser GUI, including how users choose a surface and how multiple files and Git diffs fit into the same flow. Interface-specific rendering can differ; comment meaning and saved feedback should remain consistent.
 
 Output naming, the minimal JSON contract, and the treatment of changing content follow from those interactions. Runtime, storage, renderer libraries, and integration mechanisms should be chosen afterward.
 
