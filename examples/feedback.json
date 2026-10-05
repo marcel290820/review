@@ -1,0 +1,45 @@
+{
+  "format": "review.feedback",
+  "version": 1,
+  "review_id": "example-review",
+  "created_at": 1791153600,
+  "saved_at": 1791153600,
+  "source_root_hint": "examples",
+  "files": [
+    {
+      "id": "example-file",
+      "path": "example.md",
+      "snapshots": [
+        {
+          "id": "example-snapshot",
+          "side": "source",
+          "revision": "opened file",
+          "sha256": "6653e1c3e4d0ad2c5a1c122be71263b68197a80ae3ab65ed6fbe37b5f8e86bdd",
+          "text": "# Plan\n\nShip the local review loop.\nSave portable JSON feedback.\n"
+        }
+      ],
+      "diff": null
+    }
+  ],
+  "comments": [
+    {
+      "id": "example-comment",
+      "target": {
+        "file_id": "example-file",
+        "path": "example.md",
+        "snapshot_id": "example-snapshot",
+        "side": "source",
+        "start_byte": 8,
+        "end_byte": 36,
+        "start_line": 3,
+        "end_line": 3,
+        "quote": "Ship the local review loop.\n",
+        "before": "# Plan\n\n",
+        "after": "Save portable JSON feedback.\n"
+      },
+      "body": "Define how both interfaces preserve the original comment context after revision.",
+      "created_at": 1791153600,
+      "updated_at": 1791153600
+    }
+  ]
+}

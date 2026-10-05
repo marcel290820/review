@@ -1,0 +1,6 @@
+/target/
+/frontend/node_modules/
+/test-results/
+/*.review.json
+/review-feedback.json
+/review-feedback.json.*.json
