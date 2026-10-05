@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { boundary, lineRange, sourceLines } from './selection.js';
-  import type { Comment, DiffRow, Snapshot, View } from './types';
+  import type { Comment, Content, DiffRow, Snapshot, State } from './types';
 
-  let view = $state<View | null>(null);
+  let content = $state<Content | null>(null);
+  let view = $state<State | null>(null);
   let fileIndex = $state(0);
   let snapshotId = $state('');
   let mode = $state('source');
@@ -13,7 +14,6 @@
   let last = $state(1);
   let body = $state('');
   let editing = $state<string | null>(null);
-  let draftVersion = $state(0);
   let message = $state('');
   let busy = $state(false);
   let textarea = $state<HTMLTextAreaElement>();
@@ -22,12 +22,12 @@
   const token = fragment.get('token') || sessionStorage.getItem('review-token') || '';
   if (fragment.has('token')) { sessionStorage.setItem('review-token', token); history.replaceState(null, '', location.pathname); }
 
-  let file = $derived(view?.feedback.files[fileIndex]);
+  let file = $derived(content?.files[fileIndex]);
   let snapshot = $derived(file?.snapshots.find(s => s.id === snapshotId) || file?.snapshots.at(-1));
-  let revision = $derived(view?.revisions.find(r => r.file_id === file?.id));
+  let disk = $derived(view?.disk.find(d => d.file_id === file?.id));
   let source = $derived(sourceLines(snapshot?.text || ''));
   let snapshotLines = $derived(new Map(file?.snapshots.map(s => [s.id, sourceLines(s.text)])));
-  let preview = $derived(view?.previews.find(p => p.snapshot_id === snapshot?.id)?.html || '');
+  let preview = $derived(content?.previews.find(p => p.snapshot_id === snapshot?.id)?.html || '');
   let quote = $derived.by(() => {
     if (!selection || !file) return '';
     const target = selection;
@@ -35,42 +35,46 @@
     return s ? new TextDecoder().decode(new TextEncoder().encode(s.text).slice(target.start_byte, target.end_byte)) : '';
   });
 
-  async function request(path: string, method = 'GET', payload?: unknown): Promise<View> {
+  async function request<T = State>(path: string, method = 'GET', payload?: unknown): Promise<T> {
     const response = await fetch(path, { method, headers: { Authorization: `Bearer ${token}`, ...(payload !== undefined ? { 'Content-Type': 'application/json' } : {}) }, ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}) });
     const text = await response.text();
     if (!response.ok) { let error = text; try { error = JSON.parse(text).error || text; } catch {} throw Error(error); }
     return JSON.parse(text);
   }
+  async function loadContent() {
+    try {
+      content = await request<Content>('/api/content');
+      snapshotId = content.files[0].snapshots.at(-1)!.id; mode = content.files[0].diff ? 'diff' : 'source';
+    } catch (error) { message = String(error); }
+  }
   async function load() {
     const sequence = ++serial;
     try {
-      const next = await request('/api/state');
-      if (sequence !== serial) return;
-      view = next;
-      if (!snapshotId) { snapshotId = next.feedback.files[0].snapshots.at(-1)!.id; mode = next.feedback.files[0].diff ? 'diff' : 'source'; }
+      const next = await request('/api/refresh', 'POST');
+      if (sequence === serial) view = next;
     } catch (error) { message = String(error); }
   }
-  async function mutate(path: string, method: string, payload: unknown) {
+  async function mutate(path: string, method: string, payload?: unknown) {
     busy = true; const sequence = ++serial;
     try { const next = await request(path, method, payload); if (sequence === serial) view = next; return true; }
-    catch (error) { await load(); message = String(error); draftVersion = view?.revision || 0; return false; }
+    catch (error) { await load(); message = String(error); return false; }
     finally { busy = false; }
   }
   function chooseFile(index: number) {
     if ((body || editing) && !confirm('Discard this unrecorded comment draft?')) return;
-    fileIndex = index; snapshotId = view!.feedback.files[index].snapshots.at(-1)!.id;
-    mode = view!.feedback.files[index].diff ? 'diff' : 'source'; selection = null; editing = null; body = ''; first = last = 1;
+    fileIndex = index; snapshotId = content!.files[index].snapshots.at(-1)!.id;
+    mode = content!.files[index].diff ? 'diff' : 'source'; selection = null; editing = null; body = ''; first = last = 1;
   }
   function selectLine(s: Snapshot, number: number, extend = false) {
     if (editing) { message = 'Finish or cancel editing before choosing another target.'; return; }
     if (!extend || selection?.snapshot_id !== s.id) { first = last = number; }
     else { first = Math.min(first, number); last = Math.max(last, number); }
-    snapshotId = s.id; selection = { snapshot_id: s.id, ...lineRange(s.text, first, last) }; draftVersion = view!.revision;
+    snapshotId = s.id; selection = { snapshot_id: s.id, ...lineRange(s.text, first, last) };
     message = `${s.side} lines ${first}–${last} selected`;
   }
   function numericSelection() {
     if (!snapshot || editing) return;
-    try { selection = { snapshot_id: snapshot.id, ...lineRange(snapshot.text, first, last) }; draftVersion = view!.revision; message = ''; }
+    try { selection = { snapshot_id: snapshot.id, ...lineRange(snapshot.text, first, last) }; message = ''; }
     catch (error) { selection = null; message = String(error); }
   }
   function pointerSelection() {
@@ -84,29 +88,29 @@
     snapshotId = s.id; selection = { snapshot_id: s.id, start_byte: Math.min(a.byte, b.byte), end_byte: Math.max(a.byte, b.byte) };
     first = sourceLines(s.text).findIndex(l => l.end > selection!.start_byte) + 1;
     last = sourceLines(s.text).findIndex(l => l.end >= selection!.end_byte) + 1;
-    draftVersion = view!.revision; message = 'Passage selected. Write a comment below.';
+    message = 'Passage selected. Write a comment below.';
   }
   async function record() {
     if (mode === 'current' || mode === 'preview') return;
     if (!file || (!selection && !editing) || !body.trim()) return;
-    const ok = await mutate(editing ? `/api/comments/${editing}` : '/api/comments', editing ? 'PUT' : 'POST', editing ? { body, expected_revision: draftVersion } : { file_id: file.id, ...selection, body, expected_revision: draftVersion });
+    const ok = await mutate(editing ? `/api/comments/${editing}` : '/api/comments', editing ? 'PUT' : 'POST', editing ? { body } : { file_id: file.id, ...selection, body });
     if (ok) { body = ''; editing = null; message = 'Comment recorded. Save feedback to write it to disk.'; }
   }
   function revisit(c: Comment, edit = false) {
     if ((body || editing) && !confirm('Discard this unrecorded comment draft?')) return;
-    fileIndex = view!.feedback.files.findIndex(f => f.id === c.target.file_id);
+    fileIndex = content!.files.findIndex(f => f.id === c.target.file_id);
     snapshotId = c.target.snapshot_id; mode = 'source'; selection = { snapshot_id: snapshotId, start_byte: c.target.start_byte, end_byte: c.target.end_byte };
-    first = c.target.start_line; last = c.target.end_line; editing = edit ? c.id : null; body = edit ? c.body : ''; draftVersion = view!.revision;
+    first = c.target.start_line; last = c.target.end_line; editing = edit ? c.id : null; body = edit ? c.body : '';
     message = `Original ${c.target.side} lines ${first}–${last}`;
     setTimeout(() => { document.getElementById(`line-${first}`)?.scrollIntoView({ block: 'center' }); if (edit) textarea?.focus(); }, 0);
   }
   async function remove(c: Comment) {
     if (!confirm('Delete this comment?')) return;
-    if (await mutate(`/api/comments/${c.id}`, 'DELETE', { expected_revision: view!.revision })) { if (editing === c.id) { body = ''; editing = null; } message = 'Comment deleted. Save to write feedback.'; }
+    if (await mutate(`/api/comments/${c.id}`, 'DELETE')) { if (editing === c.id) { body = ''; editing = null; } message = 'Comment deleted. Save to write feedback.'; }
   }
   async function save() {
     if (body || editing) { message = 'Record or cancel the comment draft before saving feedback.'; textarea?.focus(); return; }
-    if (await mutate('/api/save', 'POST', { expected_revision: view!.revision })) message = `Saved ${view!.last_saved}`;
+    if (await mutate('/api/save', 'POST')) message = `Saved ${view!.last_saved}`;
   }
   function rowSnapshot(row: DiffRow) { return file?.snapshots.find(s => s.side === (row.kind === 'delete' ? 'old' : row.kind === 'add' ? 'new' : contextSide)); }
   function rowLine(row: DiffRow, s: Snapshot | undefined) { return (s?.side === 'old' ? row.old_line : row.new_line) || 1; }
@@ -114,11 +118,11 @@
     if (event.ctrlKey && event.key === 's') { event.preventDefault(); if (!busy && view) { if (event.target === textarea) void record(); else void save(); } return; }
     if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement) return;
     if (event.key === 'c') textarea?.focus();
-    if (event.key === ']' && view) chooseFile((fileIndex + 1) % view.feedback.files.length);
-    if (event.key === '[' && view) chooseFile((fileIndex + view.feedback.files.length - 1) % view.feedback.files.length);
+    if (event.key === ']' && content) chooseFile((fileIndex + 1) % content.files.length);
+    if (event.key === '[' && content) chooseFile((fileIndex + content.files.length - 1) % content.files.length);
   }
   onMount(() => {
-    void load();
+    void loadContent(); void load();
     const timer = setInterval(() => { if (!busy) void load(); }, 2500);
     const leave = (event: BeforeUnloadEvent) => { if (view?.dirty || body || editing) { event.preventDefault(); event.returnValue = ''; } };
     window.addEventListener('beforeunload', leave); window.addEventListener('keydown', key);
@@ -134,10 +138,10 @@
   {/if}
 </header>
 <div class="status" role="status" aria-live="polite">{message || 'Select source text or line numbers, write a comment, then save feedback.'}</div>
-{#if view && file && snapshot}
+{#if view && content && file && snapshot}
   <nav aria-label="Review controls">
     <label>File <select aria-label="File" value={fileIndex} onchange={(e) => { chooseFile(Number(e.currentTarget.value)); e.currentTarget.value = String(fileIndex); }}>
-      {#each view.feedback.files as f, i}<option value={i}>{f.path}</option>{/each}
+      {#each content.files as f, i}<option value={i}>{f.path}</option>{/each}
     </select></label>
     <label>Side <select bind:value={snapshotId} onchange={() => { selection = null; first = last = 1; }} disabled={!!editing}>
       {#each file.snapshots as s}<option value={s.id}>{s.side} · {s.revision.slice(0, 16)}</option>{/each}
@@ -147,7 +151,7 @@
     {#if preview}<button aria-pressed={mode === 'preview'} onclick={() => mode = 'preview'}>Markdown preview</button>{/if}
     <button aria-pressed={mode === 'current'} onclick={async () => { await load(); mode = mode === 'current' ? 'source' : 'current'; }}>Inspect revisions</button>
   </nav>
-  <p class:changed={revision?.state !== 'unchanged'} class="revision-status">{revision?.state}: {revision?.message}</p>
+  <p class:changed={disk?.status !== 'unchanged'} class="revision-status">{disk?.status}: {disk?.message}</p>
   <main>
     <section aria-label="Reviewed content">
       <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions (Focusable scroll region; line buttons and ranges provide keyboard selection.) -->
@@ -157,11 +161,9 @@
           <article class="markdown">{@html preview}</article>
         {:else if mode === 'current'}
           <p class="hint">Disk revision is read-only. Existing comments remain on the original snapshot.</p>
-          {#if revision?.text !== null && revision?.text !== undefined}
-            {#if revision.diff.length}
-              {#each revision.diff as row}<div class="source-row {row.kind}"><code class="revision-gutter">{row.old_line ?? ''} → {row.new_line ?? ''}</code><span>{row.kind === 'delete' ? '−' : row.kind === 'add' ? '+' : ' '} {row.text}</span></div>{/each}
-            {:else}<pre>{revision.text}</pre>{/if}
-          {:else}<p>{revision?.message}</p>{/if}
+          {#if disk?.diff.length}
+            {#each disk.diff as row}<div class="source-row {row.kind}"><code class="revision-gutter">{row.old_line ?? ''} → {row.new_line ?? ''}</code><span>{row.kind === 'delete' ? '−' : row.kind === 'add' ? '+' : ' '} {row.text}</span></div>{/each}
+          {:else}<p>{disk?.message}</p>{/if}
         {:else if mode === 'diff' && file.diff}
           <label class="hint">Context target side <select bind:value={contextSide}><option value="new">new</option><option value="old">old</option></select></label>
           {#each file.diff as row}
@@ -202,9 +204,9 @@
       </form>
     </section>
     <aside aria-label="Comments">
-      <h2>Comments <span class="badge">{view.feedback.comments.length}</span></h2>
-      {#if !view.feedback.comments.length}<p class="hint">Select a passage or click a line number to add the first comment.</p>{/if}
-      {#each view.feedback.comments as c (c.id)}
+      <h2>Comments <span class="badge">{view.comments.length}</span></h2>
+      {#if !view.comments.length}<p class="hint">Select a passage or click a line number to add the first comment.</p>{/if}
+      {#each view.comments as c (c.id)}
         <article class="comment">
           <button class="comment-target" onclick={() => revisit(c)}>{c.target.path} · {c.target.side} L{c.target.start_line}–{c.target.end_line}</button>
           <blockquote>{c.target.quote || '(empty file)'}</blockquote><p>{c.body}</p>

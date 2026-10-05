@@ -41,7 +41,7 @@ The save destination defaults to `review-feedback.json` in the invocation direct
 
 Reopening without `--root` reads only the saved snapshots. Review never follows the `source_root_hint` in imported JSON. Paths in feedback are relative to the original invocation directory when it contains all selected files, otherwise to their common parent. Use that directory as `--root` after revision; the hint helps identify it. Moving feedback does not change its meaning.
 
-Both interfaces check disk revisions periodically. Inspect revisions shows additions and deletions against the reviewed source or new diff side, with a text fallback if Git is unavailable. Missing, inaccessible, and changed files are explicit states. Revision views are read-only: comments stay attached to their original snapshots, and content changes never resolve a concern. Open the revised files as a new review to comment on them.
+Both interfaces check disk revisions periodically. Inspect revisions shows additions and deletions against the reviewed source or new diff side. Missing, inaccessible, and changed files are explicit states. Revision views are read-only: comments stay attached to their original snapshots, and content changes never resolve a concern. Open the revised files as a new review to comment on them.
 
 ### Terminal controls
 
@@ -69,7 +69,7 @@ Select source text with the pointer, click a line number, Shift-click another li
 
 Markdown preview is read-only. Use Source for precise targeting. In a unified diff, old and new line-number buttons choose their respective snapshots; a selector chooses the target side of context text. Selections spanning both sides are rejected. Full source views support ranges that cross separate hunks.
 
-The browser warns before leaving with unsaved feedback or a draft. The first Ctrl+C in the server also preserves recorded unsaved feedback; save in the browser and stop again. A second Ctrl+C within three seconds explicitly discards it. Abrupt termination cannot preserve in-memory feedback or unrecorded drafts.
+Several tabs share one review session; when two tabs edit the same comment, the last recorded edit wins. The browser warns before leaving with unsaved feedback or a draft. The first Ctrl+C in the server also preserves recorded unsaved feedback; save in the browser and stop again. A second Ctrl+C within three seconds explicitly discards it. Abrupt termination cannot preserve in-memory feedback or unrecorded drafts.
 
 ## Git diffs
 
@@ -89,11 +89,11 @@ review --diff --repo /path/to/repo -- docs/plan.md src/main.rs
 
 See [examples/feedback.json](examples/feedback.json) for a complete readable example. The format is `review.feedback`, version `1`:
 
-- `files` contain relative paths, stable IDs, complete reviewed snapshots, SHA-256 hashes, and optional unified diff rows.
+- `files` contain relative paths, stable IDs, complete reviewed snapshots, and SHA-256 hashes. A file has one `source` snapshot, or an `old` and/or `new` snapshot for a Git change. The interfaces compute unified diffs from those snapshots; diffs are not stored.
 - Each comment identifies its file, snapshot, side (`source`, `old`, or `new`), selected quote, surrounding context, and requested change.
 - `start_byte` and `end_byte` are zero-based UTF-8 byte offsets forming a half-open range `[start_byte, end_byte)`. They refer to that snapshot's exact bytes, including CRLF. Line numbers are one-based and inclusive. Empty-file targets use `[0, 0)`.
 - Comment editing changes the body while preserving the target. Deletion is explicit. There is no inferred resolution or automatic relocation.
-- Reopening rejects unsupported versions, unknown fields, duplicate identifiers, invalid checksums, invalid UTF-8 boundaries, mismatched quotes/context, and invalid diff-side mappings.
+- Reopening rejects unsupported versions, unknown fields, duplicate identifiers, invalid checksums, invalid UTF-8 boundaries, mismatched quotes/context, and files that mix source and diff snapshots.
 - Saves use a temporary file, sync it, and publish it without replacing an existing filename. Concurrent saves receive distinct names.
 
 ## Local browser boundary
@@ -104,7 +104,7 @@ The API exposes selected snapshots, comments, revision inspection, and the CLI-c
 
 ## Development and verification
 
-The checked-in `frontend/dist` bundle lets a Rust-only build work. When changing the frontend, use Node (verified with 24.21.0) and regenerate it before building Rust:
+The checked-in `frontend/dist` bundle lets a Rust-only build work. When changing the frontend, use Node (verified with 24.21.0) and regenerate it before building Rust; CI fails when the committed bundle differs from a fresh build:
 
 ```sh
 cd frontend
@@ -139,7 +139,7 @@ cd frontend
 LD_LIBRARY_PATH=/tmp/review-browser-deps-local/lib/usr/lib/x86_64-linux-gnu npm run test:browser
 ```
 
-Set `REVIEW_BIN=/absolute/path/to/review` to test a different build. `PLAYWRIGHT_BROWSERS_PATH` can place test browser downloads under `/tmp`. The browser suite drives real pointer and keyboard interactions, follows browser → TUI → browser feedback, verifies revision inspection, old/new targets, offline assets, safe Markdown, stale edit conflicts, and save failures. It writes a screenshot to `/tmp/review-artifacts/browser.png`.
+Set `REVIEW_BIN=/absolute/path/to/review` to test a different build. `PLAYWRIGHT_BROWSERS_PATH` can place test browser downloads under `/tmp`. The browser suite drives real pointer and keyboard interactions, follows browser → TUI → browser feedback, verifies revision inspection, old/new targets, offline assets, safe Markdown, edits from several tabs, and save failures. It writes a screenshot to `/tmp/review-artifacts/browser.png`.
 
 See [VERIFICATION.md](VERIFICATION.md) for the completed local checks and their limits.
 

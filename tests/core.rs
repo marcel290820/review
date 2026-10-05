@@ -1,6 +1,6 @@
 use review::{
-    core::{self, Feedback, MAX_TEXT, Session, Side},
-    git,
+    core::{self, DiffKind, DiskStatus, Feedback, MAX_TEXT, Session, Side},
+    git, http,
 };
 use std::{fs, path::Path, process::Command};
 
@@ -44,12 +44,12 @@ fn complete_loop_preserves_snapshot_context_and_saves_versions() {
     )
     .unwrap();
     assert_eq!(restored.feedback.comments[0].target, original);
-    assert_eq!(restored.revisions[0].state, "changed");
+    assert_eq!(restored.disk[0].status, DiskStatus::Changed);
     assert!(
-        restored.revisions[0]
+        restored.disk[0]
             .diff
             .iter()
-            .any(|r| r.kind == "add" && r.text == "Inserted line")
+            .any(|r| r.kind == DiffKind::Add && r.text == "Inserted line")
     );
     let second = restored.save().unwrap();
     assert_ne!(second, saved);
@@ -57,7 +57,7 @@ fn complete_loop_preserves_snapshot_context_and_saves_versions() {
     restored.delete(&id).unwrap();
     assert!(restored.feedback.comments.is_empty());
     let detached = Session::reopen(&second, None, dir.path().join("elsewhere.json")).unwrap();
-    assert_eq!(detached.revisions[0].state, "detached");
+    assert_eq!(detached.disk[0].status, DiskStatus::Detached);
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn changed_missing_and_symlinked_revisions_remain_explicit() {
     add_line(&mut s, 1, "Keep context");
     fs::remove_file(dir.path().join("note.md")).unwrap();
     s.refresh();
-    assert_eq!(s.revisions[0].state, "missing");
+    assert_eq!(s.disk[0].status, DiskStatus::Missing);
     #[cfg(unix)]
     {
         let outside = tempfile::tempdir().unwrap();
@@ -174,8 +174,8 @@ fn changed_missing_and_symlinked_revisions_remain_explicit() {
         std::os::unix::fs::symlink(outside.path().join("private"), dir.path().join("note.md"))
             .unwrap();
         s.refresh();
-        assert_eq!(s.revisions[0].state, "unavailable");
-        assert!(s.revisions[0].text.is_none());
+        assert_eq!(s.disk[0].status, DiskStatus::Unavailable);
+        assert!(s.disk[0].diff.is_empty());
     }
     assert_eq!(s.feedback.comments[0].target.quote, "reviewed");
 }
@@ -205,7 +205,7 @@ fn documented_example_reopens_and_matches_source() {
         output.path().join("feedback.json"),
     )
     .unwrap();
-    assert_eq!(s.revisions[0].state, "unchanged");
+    assert_eq!(s.disk[0].status, DiskStatus::Unchanged);
     assert_eq!(
         s.feedback.comments[0].target.quote,
         "Ship the local review loop.\n"
@@ -213,8 +213,36 @@ fn documented_example_reopens_and_matches_source() {
 }
 
 #[test]
+fn diff_rows_use_target_line_numbers() {
+    let rows = |old, new| {
+        core::diff(old, new)
+            .into_iter()
+            .map(|r| (r.kind, r.text, r.old_line, r.new_line))
+            .collect::<Vec<_>>()
+    };
+    assert!(rows("same\n", "same\n").is_empty());
+    // A bare '\r' is not a line break for targets, so it must not shift diff lines.
+    assert_eq!(
+        rows("a\rb\nold", "a\rb\nnew\n"),
+        vec![
+            (DiffKind::Hunk, "@@ -1,2 +1,2 @@".into(), None, None),
+            (DiffKind::Context, "a\rb".into(), Some(1), Some(1)),
+            (DiffKind::Delete, "old".into(), Some(2), None),
+            (
+                DiffKind::Note,
+                "\\ No newline at end of file".into(),
+                None,
+                None
+            ),
+            (DiffKind::Add, "new".into(), None, Some(2)),
+        ]
+    );
+    assert_eq!(rows("", "x\n")[0].1, "@@ -0,0 +1 @@");
+}
+
+#[test]
 fn markdown_has_no_executable_html_or_external_resources() {
-    let html = core::markdown(
+    let html = http::markdown(
         "# Heading\n<script>alert(1)</script>\n\n[x](javascript:evil) ![alt](https://example.invalid/img)\n<iframe src='x'></iframe>",
     );
     assert!(html.contains("<h1>Heading</h1>"));
@@ -305,18 +333,17 @@ fn git_worktree_staged_commits_add_delete_and_multiple_hunks_have_reliable_sides
     let mut s = git::open(root, "HEAD", None, false, &[], output.clone()).unwrap();
     assert_eq!(s.feedback.files.len(), 3);
     s.feedback.validate().unwrap();
-    let f = s
+    let i = s
         .feedback
         .files
         .iter()
-        .find(|f| f.path.starts_with("a name"))
+        .position(|f| f.path.starts_with("a name"))
         .unwrap();
+    let f = &s.feedback.files[i];
     assert_eq!(
-        f.diff
-            .as_ref()
-            .unwrap()
+        s.diffs[i]
             .iter()
-            .filter(|r| r.kind == "hunk")
+            .filter(|r| r.kind == DiffKind::Hunk)
             .count(),
         2
     );

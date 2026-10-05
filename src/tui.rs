@@ -1,4 +1,4 @@
-use crate::core::{Comment, DiffRow, Session, Side, line_range, lines};
+use crate::core::{Comment, DiffKind, DiffRow, Session, Side, Snapshot, line_range, lines};
 use anyhow::{Context, Result, ensure};
 use crossterm::{
     event::{
@@ -22,8 +22,30 @@ use std::{
 #[derive(Clone)]
 struct Row {
     text: String,
-    kind: String,
+    /// `None` for source lines and messages.
+    kind: Option<DiffKind>,
     target: Option<(String, usize)>,
+}
+fn note(text: impl Into<String>) -> Row {
+    Row {
+        text: text.into(),
+        kind: None,
+        target: None,
+    }
+}
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+    /// The unified diff of a diff file, or the source of a source file.
+    Main,
+    /// The full text of one snapshot.
+    Snapshot(Side),
+    /// The current disk content compared with the reviewed snapshot (read-only).
+    Disk,
+}
+#[derive(Clone, Copy)]
+enum Confirm {
+    Quit,
+    Delete,
 }
 struct Draft {
     text: String,
@@ -34,7 +56,8 @@ struct Draft {
 struct Ui {
     session: Session,
     file: usize,
-    mode: usize,
+    mode: Mode,
+    /// Diff context lines target the old side instead of the new side.
     old: bool,
     rows: Vec<Row>,
     line: usize,
@@ -43,7 +66,7 @@ struct Ui {
     comments_focus: bool,
     horizontal: usize,
     draft: Option<Draft>,
-    confirm: Option<String>,
+    confirm: Option<Confirm>,
     message: String,
 }
 struct Restore;
@@ -70,11 +93,12 @@ fn clean(text: &str) -> String {
 impl Ui {
     fn rebuild(&mut self) {
         let f = &self.session.feedback.files[self.file];
-        let snapshot = |side: Side| f.snapshots.iter().find(|s| s.side == side);
         let from_diff = |diff: &[DiffRow], targets: bool| {
             diff.iter()
                 .map(|row| {
-                    let side = if row.kind == "delete" || (row.kind == "context" && self.old) {
+                    let side = if row.kind == DiffKind::Delete
+                        || (row.kind == DiffKind::Context && self.old)
+                    {
                         Side::Old
                     } else {
                         Side::New
@@ -85,14 +109,15 @@ impl Ui {
                         row.new_line
                     };
                     let target = if targets {
-                        snapshot(side).and_then(|s| number.map(|n| (s.id.clone(), n)))
+                        f.snapshot(side)
+                            .and_then(|s| number.map(|n| (s.id.clone(), n)))
                     } else {
                         None
                     };
-                    let marker = match row.kind.as_str() {
-                        "add" => '+',
-                        "delete" => '-',
-                        "context" => ' ',
+                    let marker = match row.kind {
+                        DiffKind::Add => '+',
+                        DiffKind::Delete => '-',
+                        DiffKind::Context => ' ',
                         _ => '·',
                     };
                     Row {
@@ -102,72 +127,41 @@ impl Ui {
                             row.new_line.map(|n| n.to_string()).unwrap_or_default(),
                             row.text
                         ),
-                        kind: row.kind.clone(),
+                        kind: Some(row.kind),
                         target,
                     }
                 })
                 .collect::<Vec<_>>()
         };
-        self.rows = if self.mode == 3 {
-            let revision = &self.session.revisions[self.file];
-            if revision.diff.is_empty() {
-                revision
-                    .text
-                    .as_ref()
-                    .map(|text| {
-                        lines(text)
-                            .iter()
-                            .enumerate()
-                            .map(|(i, (a, b))| Row {
-                                text: format!(
-                                    "{:>5} {}",
-                                    i + 1,
-                                    text[*a..*b].trim_end_matches('\n')
-                                ),
-                                kind: "source".into(),
-                                target: None,
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_else(|| {
-                        vec![Row {
-                            text: revision.message.clone(),
-                            kind: "note".into(),
-                            target: None,
-                        }]
-                    })
-            } else {
-                from_diff(&revision.diff, false)
-            }
-        } else if self.mode == 0 && f.diff.is_some() {
-            from_diff(f.diff.as_ref().unwrap(), true)
-        } else {
-            let s = if self.mode == 1 {
-                snapshot(Side::Old)
-            } else if self.mode == 2 {
-                snapshot(Side::New)
-            } else {
-                f.snapshots.first()
-            };
+        let source = |s: Option<&Snapshot>| {
             s.map(|s| {
                 lines(&s.text)
                     .iter()
                     .enumerate()
                     .map(|(i, (a, b))| Row {
                         text: format!("{:>5} {}", i + 1, s.text[*a..*b].trim_end_matches('\n')),
-                        kind: "source".into(),
+                        kind: None,
                         target: Some((s.id.clone(), i + 1)),
                     })
                     .collect()
             })
             .unwrap_or_default()
         };
+        self.rows = match self.mode {
+            Mode::Disk => {
+                let disk = &self.session.disk[self.file];
+                if disk.diff.is_empty() {
+                    vec![note(disk.message.clone())]
+                } else {
+                    from_diff(&disk.diff, false)
+                }
+            }
+            Mode::Main if f.is_diff() => from_diff(&self.session.diffs[self.file], true),
+            Mode::Main => source(f.snapshots.first()),
+            Mode::Snapshot(side) => source(f.snapshot(side)),
+        };
         if self.rows.is_empty() {
-            self.rows.push(Row {
-                text: "No textual changes on this side.".into(),
-                kind: "note".into(),
-                target: None,
-            });
+            self.rows.push(note("No textual changes on this side."));
         }
         self.line = self.line.min(self.rows.len() - 1);
     }
@@ -205,11 +199,7 @@ impl Ui {
             .iter()
             .position(|f| f.id == c.target.file_id)
             .unwrap();
-        self.mode = match c.target.side {
-            Side::Source => 0,
-            Side::Old => 1,
-            Side::New => 2,
-        };
+        self.mode = Mode::Snapshot(c.target.side);
         self.anchor = None;
         self.line = c.target.start_line - 1;
         self.rebuild();
@@ -242,15 +232,15 @@ impl Ui {
             edit_input(self.draft.as_mut().unwrap(), key);
             return Ok(false);
         }
-        if let Some(action) = self.confirm.clone() {
-            match (action.as_str(), key.code) {
-                ("quit", KeyCode::Char('s')) => {
+        if let Some(action) = self.confirm {
+            match (action, key.code) {
+                (Confirm::Quit, KeyCode::Char('s')) => {
                     let p = self.session.save()?;
                     self.message = format!("Saved {}", p.display());
                     return Ok(true);
                 }
-                ("quit", KeyCode::Char('d')) => return Ok(true),
-                ("delete", KeyCode::Char('y')) => {
+                (Confirm::Quit, KeyCode::Char('d')) => return Ok(true),
+                (Confirm::Delete, KeyCode::Char('y')) => {
                     if let Some(c) = self.session.feedback.comments.get(self.comment) {
                         let id = c.id.clone();
                         self.session.delete(&id)?;
@@ -269,7 +259,7 @@ impl Ui {
             || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c'))
         {
             if self.session.dirty {
-                self.confirm = Some("quit".into());
+                self.confirm = Some(Confirm::Quit);
             } else {
                 return Ok(true);
             }
@@ -306,7 +296,7 @@ impl Ui {
                 } else {
                     (self.file + len - 1) % len
                 };
-                self.mode = 0;
+                self.mode = Mode::Main;
                 self.line = 0;
                 self.anchor = None;
                 self.horizontal = 0;
@@ -328,10 +318,11 @@ impl Ui {
                 self.rebuild();
             }
             KeyCode::Char('b') => {
-                self.mode = if self.session.feedback.files[self.file].diff.is_some() {
-                    (self.mode + 1) % 3
-                } else {
-                    0
+                self.mode = match self.mode {
+                    _ if !self.session.feedback.files[self.file].is_diff() => Mode::Main,
+                    Mode::Main => Mode::Snapshot(Side::Old),
+                    Mode::Snapshot(Side::Old) => Mode::Snapshot(Side::New),
+                    _ => Mode::Main,
                 };
                 self.line = 0;
                 self.anchor = None;
@@ -339,7 +330,11 @@ impl Ui {
             }
             KeyCode::Char('r') => {
                 self.session.refresh();
-                self.mode = if self.mode == 3 { 0 } else { 3 };
+                self.mode = if self.mode == Mode::Disk {
+                    Mode::Main
+                } else {
+                    Mode::Disk
+                };
                 self.line = 0;
                 self.anchor = None;
                 self.rebuild();
@@ -369,10 +364,9 @@ impl Ui {
             KeyCode::Char('d')
                 if self.comments_focus && !self.session.feedback.comments.is_empty() =>
             {
-                self.confirm = Some("delete".into())
+                self.confirm = Some(Confirm::Delete)
             }
             KeyCode::Char('s') => {
-                self.session.refresh();
                 let path = self.session.save()?;
                 self.message = format!("Saved {}", path.display());
             }
@@ -467,27 +461,22 @@ fn render(frame: &mut Frame, ui: &Ui) {
     ])
     .split(frame.area());
     let file = &ui.session.feedback.files[ui.file];
-    let state = &ui.session.revisions[ui.file];
+    let disk = &ui.session.disk[ui.file];
     let mode = match ui.mode {
-        1 => "old source",
-        2 => "new source",
-        3 => "disk revision (read-only)",
-        _ => {
-            if file.diff.is_some() {
-                "unified diff"
-            } else {
-                "reviewed source"
-            }
-        }
+        Mode::Main if file.is_diff() => "unified diff",
+        Mode::Main | Mode::Snapshot(Side::Source) => "reviewed source",
+        Mode::Snapshot(Side::Old) => "old source",
+        Mode::Snapshot(Side::New) => "new source",
+        Mode::Disk => "disk revision (read-only)",
     };
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(format!(
-                "Review · {} · {}/{} · {mode} · {}",
+                "Review · {} · {}/{} · {mode} · {:?}",
                 clean(&file.path),
                 ui.file + 1,
                 ui.session.feedback.files.len(),
-                state.state
+                disk.status
             )),
             Line::from(format!(
                 "Save: {}{}",
@@ -510,10 +499,10 @@ fn render(frame: &mut Frame, ui: &Ui) {
         .iter()
         .enumerate()
         .map(|(i, r)| {
-            let color = match r.kind.as_str() {
-                "add" => Color::Green,
-                "delete" => Color::Red,
-                "hunk" => Color::Cyan,
+            let color = match r.kind {
+                Some(DiffKind::Add) => Color::Green,
+                Some(DiffKind::Delete) => Color::Red,
+                Some(DiffKind::Hunk) => Color::Cyan,
                 _ => Color::Reset,
             };
             let style = if i >= a && i <= b && ui.anchor.is_some() {
@@ -602,12 +591,20 @@ fn render(frame: &mut Frame, ui: &Ui) {
             ));
         }
     } else {
-        let message = match ui.confirm.as_deref() {
-            Some("quit") => "Unsaved feedback. s save and quit · d discard · Esc cancel",
-            Some("delete") => "Delete this comment? y delete · Esc cancel",
-            _ => &ui.message,
+        let message = match ui.confirm {
+            Some(Confirm::Quit) => "Unsaved feedback. s save and quit · d discard · Esc cancel",
+            Some(Confirm::Delete) => "Delete this comment? y delete · Esc cancel",
+            None => &ui.message,
         };
-        frame.render_widget(Paragraph::new(vec![Line::from(clean(message)),Line::from("j/k move · PgUp/PgDn · h/l scroll · [/] files · b sides · o/n diff target · r revisions · s save · q quit"),Line::from(clean(&state.message))]),areas[2]);
+        let keys = "j/k move · PgUp/PgDn · h/l scroll · [/] files · b sides · o/n diff target · r revisions · s save · q quit";
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(clean(message)),
+                Line::from(keys),
+                Line::from(clean(&disk.message)),
+            ]),
+            areas[2],
+        );
     }
 }
 
@@ -618,7 +615,7 @@ pub fn run(session: Session) -> Result<()> {
     let mut ui = Ui {
         session,
         file: 0,
-        mode: 0,
+        mode: Mode::Main,
         old: false,
         rows: vec![],
         line: 0,

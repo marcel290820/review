@@ -56,13 +56,15 @@ async fn call(
     )
 }
 #[tokio::test]
-async fn http_roundtrip_rejects_bad_targets_stale_edits_and_browser_path_injection() {
+async fn http_roundtrip_rejects_bad_targets_and_browser_path_injection() {
     let (dir, app) = setup();
-    let (status, state) = call(&app, "GET", "/api/state", serde_json::json!({})).await;
+    let (status, content) = call(&app, "GET", "/api/content", serde_json::json!({})).await;
     assert_eq!(status, StatusCode::OK);
-    let f = &state["feedback"]["files"][0];
+    let f = &content["files"][0];
+    assert!(f["diff"].is_null());
+    assert!(content["previews"][0]["html"].is_string());
     let s = &f["snapshots"][0];
-    let target = serde_json::json!({"file_id":f["id"],"snapshot_id":s["id"],"start_byte":0,"end_byte":10,"body":"request","expected_revision":0});
+    let target = serde_json::json!({"file_id":f["id"],"snapshot_id":s["id"],"start_byte":0,"end_byte":10,"body":"request"});
     let mut bad = target.clone();
     bad["end_byte"] = 999.into();
     assert_eq!(
@@ -71,51 +73,32 @@ async fn http_roundtrip_rejects_bad_targets_stale_edits_and_browser_path_injecti
     );
     let (status, state) = call(&app, "POST", "/api/comments", target).await;
     assert_eq!(status, StatusCode::OK);
-    let id = state["feedback"]["comments"][0]["id"].as_str().unwrap();
+    assert_eq!(state["dirty"], true);
+    let id = state["comments"][0]["id"].as_str().unwrap();
     assert_eq!(
         call(
             &app,
             "PUT",
             &format!("/api/comments/{id}"),
-            serde_json::json!({"body":"stale","expected_revision":0})
-        )
-        .await
-        .0,
-        StatusCode::CONFLICT
-    );
-    assert_eq!(
-        call(
-            &app,
-            "PUT",
-            &format!("/api/comments/{id}"),
-            serde_json::json!({"body":"updated","expected_revision":1})
+            serde_json::json!({"body":"updated"})
         )
         .await
         .0,
         StatusCode::OK
     );
+    // Save takes no input: the destination stays the CLI-configured output.
     assert_eq!(
         call(
             &app,
             "POST",
             "/api/save",
-            serde_json::json!({"expected_revision":2,"path":"../unselected"})
-        )
-        .await
-        .0,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
-    assert_eq!(
-        call(
-            &app,
-            "POST",
-            "/api/save",
-            serde_json::json!({"expected_revision":2})
+            serde_json::json!({"path":"../unselected"})
         )
         .await
         .0,
         StatusCode::OK
     );
+    assert!(!dir.path().join("../unselected").exists());
     let reopened = Session::reopen(
         &dir.path().join("feedback.json"),
         None,
@@ -123,17 +106,18 @@ async fn http_roundtrip_rejects_bad_targets_stale_edits_and_browser_path_injecti
     )
     .unwrap();
     assert_eq!(reopened.feedback.comments[0].body, "updated");
-    assert_eq!(
-        call(
-            &app,
-            "DELETE",
-            &format!("/api/comments/{id}"),
-            serde_json::json!({"expected_revision":2})
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
+    let (status, state) = call(
+        &app,
+        "DELETE",
+        &format!("/api/comments/{id}"),
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(state["comments"], serde_json::json!([]));
+    let (status, state) = call(&app, "POST", "/api/refresh", serde_json::json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(state["disk"][0]["status"], "unchanged");
     assert_eq!(
         call(
             &app,

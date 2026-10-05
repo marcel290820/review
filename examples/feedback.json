@@ -17,8 +17,7 @@
           "sha256": "6653e1c3e4d0ad2c5a1c122be71263b68197a80ae3ab65ed6fbe37b5f8e86bdd",
           "text": "# Plan\n\nShip the local review loop.\nSave portable JSON feedback.\n"
         }
-      ],
-      "diff": null
+      ]
     }
   ],
   "comments": [

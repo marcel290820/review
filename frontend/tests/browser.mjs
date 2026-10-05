@@ -79,10 +79,10 @@ try {
   await expect(page.getByLabel('Selected quote')).toHaveText('Café 🦀');
   await comment(page, 'Explain the original wording\nKeep the accent and emoji.');
   let state = await s.state();
-  assert.equal(state.feedback.comments[0].target.quote, 'Café 🦀');
-  assert.equal(state.feedback.comments[0].target.start_byte, Buffer.byteLength('# Plan\n\n'));
-  assert.equal(state.feedback.comments[0].target.end_byte - state.feedback.comments[0].target.start_byte, Buffer.byteLength('Café 🦀'));
-  const originalTarget = state.feedback.comments[0].target;
+  assert.equal(state.comments[0].target.quote, 'Café 🦀');
+  assert.equal(state.comments[0].target.start_byte, Buffer.byteLength('# Plan\n\n'));
+  assert.equal(state.comments[0].target.end_byte - state.comments[0].target.start_byte, Buffer.byteLength('Café 🦀'));
+  const originalTarget = state.comments[0].target;
 
   await page.getByRole('button', { name: 'Edit', exact: true }).click();
   await page.getByLabel('Edit comment').fill('Updated request from browser');
@@ -112,17 +112,15 @@ try {
   assert.deepEqual(external, []);
   await page.getByRole('button', { name: 'Source', exact: true }).click();
 
-  // An edit captured before another tab's mutation must fail without losing its draft.
+  // Tabs share one session; the last recorded edit wins.
   await page.getByRole('button', { name: 'Edit', exact: true }).first().click();
-  await page.getByLabel('Edit comment').fill('Retry draft retained');
-  state = await s.state(); const id = state.feedback.comments[0].id;
-  const concurrent = await fetch(`${s.base}/api/comments/${id}`, { method: 'PUT', headers: { Authorization: `Bearer ${s.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ body: 'Other tab edit', expected_revision: state.revision }) });
+  await page.getByLabel('Edit comment').fill('Draft from this tab');
+  state = await s.state(); const id = state.comments[0].id;
+  const concurrent = await fetch(`${s.base}/api/comments/${id}`, { method: 'PUT', headers: { Authorization: `Bearer ${s.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ body: 'Other tab edit' }) });
   assert.equal(concurrent.status, 200);
   await page.getByRole('button', { name: 'Update comment' }).click();
-  await expect(page.getByRole('status')).toContainText('Feedback changed in another tab');
-  await expect(page.getByLabel('Edit comment')).toHaveValue('Retry draft retained');
-  await page.getByRole('button', { name: 'Update comment' }).click();
   await expect(page.getByRole('status')).toContainText('Comment recorded');
+  assert.equal((await s.state()).comments[0].body, 'Draft from this tab');
   saved = await save(page, s);
   await context.close(); s.stop();
 
@@ -140,8 +138,8 @@ try {
   await p.locator('.comment-target').first().click();
   await expect(p.getByLabel('Selected quote')).toHaveText('Café 🦀');
   await expect(p.locator('.content')).toContainText('Café 🦀 is old.');
-  const transferred = await re.state(); assert.deepEqual(transferred.feedback.comments[0].target, originalTarget);
-  assert.equal(transferred.feedback.comments.length, 3);
+  const transferred = await re.state(); assert.deepEqual(transferred.comments[0].target, originalTarget);
+  assert.equal(transferred.comments.length, 3);
   await save(p, re);
   mkdirSync('/tmp/review-artifacts', { recursive: true });
   await p.screenshot({ path: '/tmp/review-artifacts/browser.png', fullPage: true });
@@ -157,7 +155,7 @@ try {
   await expect(failureUI.page.getByRole('status')).toContainText('Save directory does not exist');
   failed.child.kill('SIGINT');
   await new Promise(r => setTimeout(r, 100));
-  assert.equal((await failed.state()).feedback.comments[0].body, 'Retained across failed save and server stop');
+  assert.equal((await failed.state()).comments[0].body, 'Retained across failed save and server stop');
   assert.equal(failed.child.exitCode, null, 'Server exited despite unsaved feedback');
   mkdirSync(join(root, 'missing'));
   await save(failureUI.page, failed);
@@ -178,7 +176,7 @@ try {
   assert.equal(diffSave.feedback.comments[1].target.side, 'new'); assert.equal(diffSave.feedback.comments[1].target.quote, 'new 🦀\n');
   assert.deepEqual(errors, []); assert.deepEqual(diffUI.errors, []); assert.deepEqual(diffUI.external, []);
   await diffUI.context.close(); dif.stop();
-  console.log(JSON.stringify({ browser: 'passed', checks: ['actual mouse selection', 'Unicode byte targets', 'range selection', 'create/edit/delete', 'multi-file', 'save collisions', 'safe Markdown', 'session security', 'stale draft preservation', 'browser → TUI → browser', 'revision inspection', 'mobile layout', 'old/new Git targets', 'bundled offline assets', 'failed save retention', 'server quit guard'] }));
+  console.log(JSON.stringify({ browser: 'passed', checks: ['actual mouse selection', 'Unicode byte targets', 'range selection', 'create/edit/delete', 'multi-file', 'save collisions', 'safe Markdown', 'session security', 'last edit wins across tabs', 'browser → TUI → browser', 'revision inspection', 'mobile layout', 'old/new Git targets', 'bundled offline assets', 'failed save retention', 'server quit guard'] }));
 } finally {
   for (const server of servers) if (server.exitCode === null) server.kill('SIGTERM');
   await browser?.close();

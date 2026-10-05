@@ -1,8 +1,8 @@
 use crate::core::{
-    DiffRow, Feedback, MAX_TEXT, ReviewFile, Session, Side, Snapshot, id, read_text, safe_relative,
+    Feedback, MAX_TEXT, ReviewFile, Session, Side, Snapshot, id, read_text, safe_relative,
     selected_path, text_bytes,
 };
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -165,7 +165,6 @@ pub fn open(
                 Some(read_text(&selected_path(&root, &path)?)?)
             }
         };
-        let rows = unified(old.as_deref().unwrap_or(""), new.as_deref().unwrap_or(""))?;
         let mut snapshots = Vec::new();
         if let Some(text) = old {
             snapshots.push(Snapshot::new(Side::Old, base.clone(), text));
@@ -191,7 +190,6 @@ pub fn open(
             id: id(),
             path,
             snapshots,
-            diff: Some(rows),
         });
     }
     ensure!(
@@ -199,100 +197,4 @@ pub fn open(
         "No text changes to review. Untracked files can be opened directly."
     );
     Session::from_feedback(Feedback::new(&root, files), Some(root), output, true)
-}
-
-pub fn unified(old: &str, new: &str) -> Result<Vec<DiffRow>> {
-    let temp = tempfile::tempdir()?;
-    fs::write(temp.path().join("old"), old)?;
-    fs::write(temp.path().join("new"), new)?;
-    let output = git(
-        temp.path(),
-        &[
-            "diff",
-            "--no-index",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-renames",
-            "--unified=3",
-            "--",
-            "old",
-            "new",
-        ],
-    )?;
-    ensure!(
-        matches!(output.status.code(), Some(0 | 1)),
-        "Cannot compare snapshots: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    parse(&String::from_utf8(output.stdout)?)
-}
-
-pub fn parse(patch: &str) -> Result<Vec<DiffRow>> {
-    let mut rows = vec![];
-    let mut old_line = 0;
-    let mut new_line = 0;
-    let mut active = false;
-    for line in patch.split_terminator('\n') {
-        if line.starts_with("@@ ") {
-            let parts: Vec<_> = line.split_whitespace().collect();
-            ensure!(parts.len() >= 4 && parts[3] == "@@", "Invalid unified hunk");
-            old_line = parts[1]
-                .strip_prefix('-')
-                .context("Invalid old hunk")?
-                .split(',')
-                .next()
-                .unwrap()
-                .parse()?;
-            new_line = parts[2]
-                .strip_prefix('+')
-                .context("Invalid new hunk")?
-                .split(',')
-                .next()
-                .unwrap()
-                .parse()?;
-            active = true;
-            rows.push(DiffRow {
-                kind: "hunk".into(),
-                text: line.into(),
-                old_line: None,
-                new_line: None,
-            });
-        } else if active {
-            let (kind, old, new) = match line.as_bytes().first() {
-                Some(b' ') => {
-                    let pair = ("context", Some(old_line), Some(new_line));
-                    old_line += 1;
-                    new_line += 1;
-                    pair
-                }
-                Some(b'-') => {
-                    let pair = ("delete", Some(old_line), None);
-                    old_line += 1;
-                    pair
-                }
-                Some(b'+') => {
-                    let pair = ("add", None, Some(new_line));
-                    new_line += 1;
-                    pair
-                }
-                Some(b'\\') => {
-                    rows.push(DiffRow {
-                        kind: "note".into(),
-                        text: line.into(),
-                        old_line: None,
-                        new_line: None,
-                    });
-                    continue;
-                }
-                _ => bail!("Invalid unified diff row"),
-            };
-            rows.push(DiffRow {
-                kind: kind.into(),
-                text: line[1..].into(),
-                old_line: old,
-                new_line: new,
-            });
-        }
-    }
-    Ok(rows)
 }

@@ -27,7 +27,7 @@ pub fn id() -> String {
     format!("{:032x}", rand::random::<u128>())
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum Side {
     Source,
@@ -56,10 +56,19 @@ impl Snapshot {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffKind {
+    Hunk,
+    Context,
+    Delete,
+    Add,
+    Note,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct DiffRow {
-    pub kind: String,
+    pub kind: DiffKind,
     pub text: String,
     pub old_line: Option<usize>,
     pub new_line: Option<usize>,
@@ -71,7 +80,15 @@ pub struct ReviewFile {
     pub id: String,
     pub path: String,
     pub snapshots: Vec<Snapshot>,
-    pub diff: Option<Vec<DiffRow>>,
+}
+impl ReviewFile {
+    /// Diff files hold old/new snapshots; source files hold one source snapshot.
+    pub fn is_diff(&self) -> bool {
+        self.snapshots.iter().any(|s| s.side != Side::Source)
+    }
+    pub fn snapshot(&self, side: Side) -> Option<&Snapshot> {
+        self.snapshots.iter().find(|s| s.side == side)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -113,39 +130,40 @@ pub struct Feedback {
     pub comments: Vec<Comment>,
 }
 
-#[derive(Clone, Debug, Serialize)]
-pub struct Revision {
-    pub file_id: String,
-    pub state: String,
-    pub message: String,
-    pub text: Option<String>,
-    pub diff: Vec<DiffRow>,
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiskStatus {
+    Detached,
+    Unchanged,
+    Changed,
+    Missing,
+    Unavailable,
 }
 
+/// The current disk content of a reviewed file, compared with its snapshot.
 #[derive(Clone, Debug, Serialize)]
-pub struct View {
-    pub feedback: Feedback,
-    pub revisions: Vec<Revision>,
-    pub revision: u64,
-    pub dirty: bool,
-    pub output: String,
-    pub last_saved: Option<String>,
-    pub previews: Vec<Preview>,
-}
-#[derive(Clone, Debug, Serialize)]
-pub struct Preview {
-    pub snapshot_id: String,
-    pub html: String,
+pub struct DiskState {
+    pub file_id: String,
+    pub status: DiskStatus,
+    pub message: String,
+    pub diff: Vec<DiffRow>,
+    /// Disk text behind `diff`, kept to skip recomparing unchanged content.
+    #[serde(skip)]
+    text: Option<String>,
 }
 
 pub struct Session {
     pub feedback: Feedback,
+    /// Unified diff rows per file, in `feedback.files` order; empty for source files.
+    pub diffs: Vec<Vec<DiffRow>>,
     pub root: Option<PathBuf>,
     pub output: PathBuf,
-    pub revision: u64,
+    /// Comment changes made in this process.
+    pub edits: u64,
     pub dirty: bool,
     pub last_saved: Option<PathBuf>,
-    pub revisions: Vec<Revision>,
+    /// Disk state per file, in `feedback.files` order.
+    pub disk: Vec<DiskState>,
 }
 
 pub fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
@@ -282,7 +300,7 @@ impl Feedback {
             file_id: file.id.clone(),
             path: file.path.clone(),
             snapshot_id: snapshot.id.clone(),
-            side: snapshot.side.clone(),
+            side: snapshot.side,
             start_byte: start,
             end_byte: end,
             start_line: text[..start].bytes().filter(|b| *b == b'\n').count() + 1,
@@ -321,7 +339,7 @@ impl Feedback {
             let mut sides = HashSet::new();
             for s in &file.snapshots {
                 ensure!(
-                    !s.id.is_empty() && ids.insert(&s.id) && sides.insert(format!("{:?}", s.side)),
+                    !s.id.is_empty() && ids.insert(&s.id) && sides.insert(s.side),
                     "Duplicate or empty snapshot identifier/side"
                 );
                 ensure!(
@@ -331,18 +349,10 @@ impl Feedback {
                 bytes += s.text.len();
             }
             ensure!(bytes <= MAX_SESSION, "Selected content exceeds 16 MiB");
-            if let Some(rows) = &file.diff {
-                ensure!(
-                    !file.snapshots.iter().any(|s| s.side == Side::Source),
-                    "Diff cannot have a source side"
-                );
-                validate_rows(file, rows)?;
-            } else {
-                ensure!(
-                    file.snapshots.len() == 1 && file.snapshots[0].side == Side::Source,
-                    "Source review requires one source snapshot"
-                );
-            }
+            ensure!(
+                !sides.contains(&Side::Source) || sides.len() == 1,
+                "A file has either one source snapshot or old/new diff snapshots"
+            );
         }
         ensure!(self.comments.len() <= 10000, "Too many comments");
         for c in &self.comments {
@@ -365,56 +375,6 @@ impl Feedback {
     }
 }
 
-fn validate_rows(file: &ReviewFile, rows: &[DiffRow]) -> Result<()> {
-    let old = file
-        .snapshots
-        .iter()
-        .find(|s| s.side == Side::Old)
-        .map(|s| (s, lines(&s.text)));
-    let new = file
-        .snapshots
-        .iter()
-        .find(|s| s.side == Side::New)
-        .map(|s| (s, lines(&s.text)));
-    for row in rows {
-        ensure!(
-            matches!(
-                row.kind.as_str(),
-                "hunk" | "context" | "delete" | "add" | "note"
-            ),
-            "Unknown diff row kind"
-        );
-        for (side, line) in [(Side::Old, row.old_line), (Side::New, row.new_line)] {
-            if let Some(line) = line {
-                let (s, ranges) = if side == Side::Old {
-                    old.as_ref()
-                } else {
-                    new.as_ref()
-                }
-                .context("Diff row refers to missing side")?;
-                ensure!(
-                    line > 0 && line <= ranges.len(),
-                    "Diff line is outside its snapshot"
-                );
-                let (a, b) = ranges[line - 1];
-                ensure!(
-                    s.text[a..b].trim_end_matches('\n') == row.text,
-                    "Diff line does not match snapshot"
-                );
-            }
-        }
-        ensure!(
-            match row.kind.as_str() {
-                "context" => row.old_line.is_some() && row.new_line.is_some(),
-                "delete" => row.old_line.is_some() && row.new_line.is_none(),
-                "add" => row.new_line.is_some() && row.old_line.is_none(),
-                _ => row.old_line.is_none() && row.new_line.is_none(),
-            },
-            "Diff side mapping is invalid"
-        );
-    }
-    Ok(())
-}
 pub fn validate_body(body: &str) -> Result<()> {
     ensure!(
         !body.trim().is_empty() && body.len() <= MAX_COMMENT,
@@ -463,7 +423,6 @@ impl Session {
                     "opened file".into(),
                     read_text(&path)?,
                 )],
-                diff: None,
             });
         }
         Self::from_feedback(Feedback::new(&root, files), Some(root), output, true)
@@ -484,14 +443,38 @@ impl Session {
         } else {
             std::env::current_dir()?.join(output)
         };
+        let diffs = feedback
+            .files
+            .iter()
+            .map(|f| {
+                let text = |side| f.snapshot(side).map_or("", |s| s.text.as_str());
+                if f.is_diff() {
+                    diff(text(Side::Old), text(Side::New))
+                } else {
+                    vec![]
+                }
+            })
+            .collect();
+        let disk = feedback
+            .files
+            .iter()
+            .map(|f| DiskState {
+                file_id: f.id.clone(),
+                status: DiskStatus::Detached,
+                message: "Snapshots only. Reopen with --root DIR to inspect revisions.".into(),
+                diff: vec![],
+                text: None,
+            })
+            .collect();
         let mut s = Self {
             feedback,
+            diffs,
             root,
             output,
-            revision: 0,
+            edits: 0,
             dirty,
             last_saved: None,
-            revisions: vec![],
+            disk,
         };
         s.refresh();
         Ok(s)
@@ -554,29 +537,59 @@ impl Session {
         Ok(())
     }
     fn changed(&mut self) {
-        self.revision += 1;
+        self.edits += 1;
         self.dirty = true;
     }
+    /// Compares each file below the authorized root with its reviewed snapshot.
     pub fn refresh(&mut self) {
-        self.revisions = self.feedback.files.iter().map(|f| {
-            let base = f.snapshots.iter().find(|s| s.side == Side::Source || s.side == Side::New);
-            let mut r = Revision { file_id: f.id.clone(), state: "detached".into(), message: "Snapshots only. Reopen with --root DIR to inspect revisions.".into(), text: None, diff: vec![] };
-            if let Some(root) = &self.root {
-                match selected_path(root, &f.path).and_then(|p| read_text(&p)) {
-                    Ok(text) => {
-                        let original = base.map(|s| s.text.as_str()).unwrap_or("");
-                        r.state = if base.is_some() && text == original { "unchanged" } else { "changed" }.into();
-                        r.message = if r.state == "changed" { "Disk content changed. Comments still refer to the reviewed snapshot." } else { "Disk content matches the reviewed snapshot." }.into();
-                        if r.state == "changed" {
-                            if let Some(previous) = self.revisions.iter().find(|r| r.file_id == f.id && r.text.as_ref() == Some(&text)) { return previous.clone(); }
-                            match crate::git::unified(original, &text) { Ok(rows) => { r.diff = rows; r.text = Some(text); }, Err(e) => { r.message = format!("Changed; comparison unavailable: {e}"); r.text = Some(text); } }
-                        }
-                    },
-                    Err(e) => { r.state = if !root.join(&f.path).exists() { "missing" } else { "unavailable" }.into(); r.message = format!("{}: {e}", f.path); },
+        let Some(root) = &self.root else { return };
+        let disk = self
+            .feedback
+            .files
+            .iter()
+            .zip(&self.disk)
+            .map(|(f, previous)| {
+                let base = f
+                    .snapshots
+                    .iter()
+                    .find(|s| s.side == Side::Source || s.side == Side::New)
+                    .map(|s| s.text.as_str());
+                let (status, message, diff, text) = match selected_path(root, &f.path)
+                    .and_then(|p| read_text(&p))
+                {
+                    Err(e) => {
+                        let status = if root.join(&f.path).exists() {
+                            DiskStatus::Unavailable
+                        } else {
+                            DiskStatus::Missing
+                        };
+                        (status, format!("{}: {e}", f.path), vec![], None)
+                    }
+                    Ok(text) if base == Some(text.as_str()) => (
+                        DiskStatus::Unchanged,
+                        "Disk content matches the reviewed snapshot.".into(),
+                        vec![],
+                        None,
+                    ),
+                    Ok(text) if previous.text.as_ref() == Some(&text) => return previous.clone(),
+                    Ok(text) => (
+                        DiskStatus::Changed,
+                        "Disk content changed. Comments still refer to the reviewed snapshot."
+                            .into(),
+                        diff(base.unwrap_or(""), &text),
+                        Some(text),
+                    ),
+                };
+                DiskState {
+                    file_id: f.id.clone(),
+                    status,
+                    message,
+                    diff,
+                    text,
                 }
-            }
-            r
-        }).collect();
+            })
+            .collect();
+        self.disk = disk;
     }
     pub fn save(&mut self) -> Result<PathBuf> {
         self.feedback.validate()?;
@@ -623,38 +636,55 @@ impl Session {
         }
         bail!("No available feedback filename; choose another output")
     }
-    pub fn view(&self) -> View {
-        View {
-            feedback: self.feedback.clone(),
-            revisions: self.revisions.clone(),
-            revision: self.revision,
-            dirty: self.dirty,
-            output: self.output.display().to_string(),
-            last_saved: self.last_saved.as_ref().map(|p| p.display().to_string()),
-            previews: self
-                .feedback
-                .files
-                .iter()
-                .filter(|f| f.path.ends_with(".md") || f.path.ends_with(".markdown"))
-                .flat_map(|f| f.snapshots.iter())
-                .map(|s| Preview {
-                    snapshot_id: s.id.clone(),
-                    html: markdown(&s.text),
-                })
-                .collect(),
-        }
-    }
 }
 
-pub fn markdown(text: &str) -> String {
-    use pulldown_cmark::{Event, Parser, Tag, TagEnd, html};
-    let events = Parser::new(text).filter_map(|e| match e {
-        Event::Html(s) | Event::InlineHtml(s) => Some(Event::Text(s)),
-        Event::Start(Tag::Link { .. } | Tag::Image { .. })
-        | Event::End(TagEnd::Link | TagEnd::Image) => None,
-        other => Some(other),
-    });
-    let mut result = String::new();
-    html::push_html(&mut result, events);
-    result
+/// Unified diff rows with three context lines, numbered like `lines`.
+pub fn diff(old: &str, new: &str) -> Vec<DiffRow> {
+    use similar::{
+        Algorithm, DiffTag, capture_diff_slices, group_diff_ops, udiff::UnifiedHunkHeader,
+    };
+    // Split on '\n' only: similar's text API also breaks lines at a bare '\r'.
+    let old: Vec<_> = old.split_inclusive('\n').collect();
+    let new: Vec<_> = new.split_inclusive('\n').collect();
+    let mut rows = vec![];
+    let mut push = |kind, line: &str, old_line, new_line| {
+        rows.push(DiffRow {
+            kind,
+            text: line.strip_suffix('\n').unwrap_or(line).into(),
+            old_line,
+            new_line,
+        });
+        if kind != DiffKind::Hunk && !line.ends_with('\n') {
+            rows.push(DiffRow {
+                kind: DiffKind::Note,
+                text: "\\ No newline at end of file".into(),
+                old_line: None,
+                new_line: None,
+            });
+        }
+    };
+    for hunk in group_diff_ops(capture_diff_slices(Algorithm::Myers, &old, &new), 3) {
+        push(
+            DiffKind::Hunk,
+            &UnifiedHunkHeader::new(&hunk).to_string(),
+            None,
+            None,
+        );
+        for op in hunk {
+            let (tag, olds, news) = op.as_tag_tuple();
+            if tag == DiffTag::Equal {
+                for (o, n) in olds.zip(news) {
+                    push(DiffKind::Context, old[o], Some(o + 1), Some(n + 1));
+                }
+            } else {
+                for o in olds {
+                    push(DiffKind::Delete, old[o], Some(o + 1), None);
+                }
+                for n in news {
+                    push(DiffKind::Add, new[n], None, Some(n + 1));
+                }
+            }
+        }
+    }
+    rows
 }

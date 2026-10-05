@@ -1,4 +1,4 @@
-use crate::core::{Session, View};
+use crate::core::{Comment, DiffRow, DiskState, ReviewFile, Session};
 use anyhow::Result;
 use axum::{
     Json, Router,
@@ -8,8 +8,11 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use serde::Deserialize;
-use std::sync::{Arc, Mutex};
+use serde::{Deserialize, Serialize};
+use std::{
+    sync::{Arc, Mutex, MutexGuard},
+    time::{Duration, Instant},
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -17,12 +20,58 @@ pub struct AppState {
     pub token: String,
     pub authority: String,
 }
-type ApiResult = std::result::Result<Json<View>, (StatusCode, Json<serde_json::Value>)>;
-fn error(status: StatusCode, message: impl ToString) -> (StatusCode, Json<serde_json::Value>) {
+type ApiError = (StatusCode, Json<serde_json::Value>);
+type ApiResult = std::result::Result<Response, ApiError>;
+fn error(status: StatusCode, message: impl ToString) -> ApiError {
     (
         status,
         Json(serde_json::json!({ "error": message.to_string() })),
     )
+}
+fn lock(state: &AppState) -> std::result::Result<MutexGuard<'_, Session>, ApiError> {
+    state.session.lock().map_err(|_| {
+        error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Review state unavailable",
+        )
+    })
+}
+
+/// Reviewed content, fixed for the session; the browser fetches it once.
+#[derive(Serialize)]
+struct Content<'a> {
+    files: Vec<FileView<'a>>,
+    previews: Vec<Preview>,
+}
+#[derive(Serialize)]
+struct FileView<'a> {
+    #[serde(flatten)]
+    file: &'a ReviewFile,
+    diff: Option<&'a [DiffRow]>,
+}
+#[derive(Serialize)]
+struct Preview {
+    snapshot_id: String,
+    html: String,
+}
+/// Mutable review state returned by every other API call.
+#[derive(Serialize)]
+struct StateView<'a> {
+    comments: &'a [Comment],
+    disk: &'a [DiskState],
+    dirty: bool,
+    output: String,
+    last_saved: Option<String>,
+}
+fn view(s: &Session) -> Response {
+    Json(StateView {
+        comments: &s.feedback.comments,
+        disk: &s.disk,
+        dirty: s.dirty,
+        output: s.output.display().to_string(),
+        last_saved: s.last_saved.as_ref().map(|p| p.display().to_string()),
+    })
+    .into_response()
 }
 
 async fn guard(State(state): State<AppState>, request: Request, next: Next) -> Response {
@@ -100,8 +149,9 @@ pub fn router(state: AppState) -> Router {
                 )
             }),
         )
+        .route("/api/content", get(content))
         .route("/api/state", get(state_view))
-        .route("/api/refresh", post(state_view))
+        .route("/api/refresh", post(refresh))
         .route("/api/comments", post(add))
         .route(
             "/api/comments/{id}",
@@ -113,15 +163,38 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
+async fn content(State(state): State<AppState>) -> ApiResult {
+    let s = lock(&state)?;
+    let files = s
+        .feedback
+        .files
+        .iter()
+        .zip(&s.diffs)
+        .map(|(file, diff)| FileView {
+            file,
+            diff: file.is_diff().then_some(diff.as_slice()),
+        })
+        .collect();
+    let previews = s
+        .feedback
+        .files
+        .iter()
+        .filter(|f| f.path.ends_with(".md") || f.path.ends_with(".markdown"))
+        .flat_map(|f| &f.snapshots)
+        .map(|s| Preview {
+            snapshot_id: s.id.clone(),
+            html: markdown(&s.text),
+        })
+        .collect();
+    Ok(Json(Content { files, previews }).into_response())
+}
 async fn state_view(State(state): State<AppState>) -> ApiResult {
-    let mut s = state.session.lock().map_err(|_| {
-        error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Review state unavailable",
-        )
-    })?;
+    Ok(view(&*lock(&state)?))
+}
+async fn refresh(State(state): State<AppState>) -> ApiResult {
+    let mut s = lock(&state)?;
     s.refresh();
-    Ok(Json(s.view()))
+    Ok(view(&s))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -131,40 +204,15 @@ struct Add {
     start_byte: usize,
     end_byte: usize,
     body: String,
-    expected_revision: u64,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Edit {
     body: String,
-    expected_revision: u64,
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Version {
-    expected_revision: u64,
-}
-fn current(
-    s: &Session,
-    expected: u64,
-) -> std::result::Result<(), (StatusCode, Json<serde_json::Value>)> {
-    if s.revision == expected {
-        Ok(())
-    } else {
-        Err(error(
-            StatusCode::CONFLICT,
-            "Feedback changed in another tab. Refresh and retry; your draft is still here.",
-        ))
-    }
-}
+// Tabs share one session without conflict checks: the last recorded edit wins.
 async fn add(State(state): State<AppState>, Json(input): Json<Add>) -> ApiResult {
-    let mut s = state.session.lock().map_err(|_| {
-        error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Review state unavailable",
-        )
-    })?;
-    current(&s, input.expected_revision)?;
+    let mut s = lock(&state)?;
     s.add(
         &input.file_id,
         &input.snapshot_id,
@@ -173,51 +221,42 @@ async fn add(State(state): State<AppState>, Json(input): Json<Add>) -> ApiResult
         input.body,
     )
     .map_err(|e| error(StatusCode::BAD_REQUEST, e))?;
-    Ok(Json(s.view()))
+    Ok(view(&s))
 }
 async fn edit(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(input): Json<Edit>,
 ) -> ApiResult {
-    let mut s = state.session.lock().map_err(|_| {
-        error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Review state unavailable",
-        )
-    })?;
-    current(&s, input.expected_revision)?;
+    let mut s = lock(&state)?;
     s.edit(&id, input.body)
         .map_err(|e| error(StatusCode::BAD_REQUEST, e))?;
-    Ok(Json(s.view()))
+    Ok(view(&s))
 }
-async fn delete(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(input): Json<Version>,
-) -> ApiResult {
-    let mut s = state.session.lock().map_err(|_| {
-        error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Review state unavailable",
-        )
-    })?;
-    current(&s, input.expected_revision)?;
+async fn delete(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult {
+    let mut s = lock(&state)?;
     s.delete(&id)
         .map_err(|e| error(StatusCode::BAD_REQUEST, e))?;
-    Ok(Json(s.view()))
+    Ok(view(&s))
 }
-async fn save(State(state): State<AppState>, Json(input): Json<Version>) -> ApiResult {
-    let mut s = state.session.lock().map_err(|_| {
-        error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Review state unavailable",
-        )
-    })?;
-    current(&s, input.expected_revision)?;
-    s.refresh();
+async fn save(State(state): State<AppState>) -> ApiResult {
+    let mut s = lock(&state)?;
     s.save().map_err(|e| error(StatusCode::CONFLICT, e))?;
-    Ok(Json(s.view()))
+    Ok(view(&s))
+}
+
+/// Renders Markdown without raw HTML, links, or images.
+pub fn markdown(text: &str) -> String {
+    use pulldown_cmark::{Event, Parser, Tag, TagEnd, html};
+    let events = Parser::new(text).filter_map(|e| match e {
+        Event::Html(s) | Event::InlineHtml(s) => Some(Event::Text(s)),
+        Event::Start(Tag::Link { .. } | Tag::Image { .. })
+        | Event::End(TagEnd::Link | TagEnd::Image) => None,
+        other => Some(other),
+    });
+    let mut result = String::new();
+    html::push_html(&mut result, events);
+    result
 }
 
 pub async fn serve(session: Session, port: u16) -> Result<()> {
@@ -237,19 +276,23 @@ pub async fn serve(session: Session, port: u16) -> Result<()> {
         authority,
     });
     let shutdown_session = session.clone();
+    let unsaved = |s: &Arc<Mutex<Session>>| s.lock().is_ok_and(|s| s.dirty && s.edits > 0);
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            let mut warned = None;
-            loop {
-                if tokio::signal::ctrl_c().await.is_err() { break; }
-                let unsaved = shutdown_session.lock().is_ok_and(|s| s.dirty && s.revision > 0);
-                if !unsaved || warned.is_some_and(|time: std::time::Instant| time.elapsed() < std::time::Duration::from_secs(3)) { break; }
-                eprintln!("Unsaved feedback. Save in the browser, then stop again. Press Ctrl+C again within 3 seconds to discard it.");
-                warned = Some(std::time::Instant::now());
+            let mut warned: Option<Instant> = None;
+            while tokio::signal::ctrl_c().await.is_ok() {
+                let repeated = warned.is_some_and(|t| t.elapsed() < Duration::from_secs(3));
+                if !unsaved(&shutdown_session) || repeated {
+                    break;
+                }
+                eprintln!(
+                    "Unsaved feedback. Save in the browser, then stop again. Press Ctrl+C again within 3 seconds to discard it."
+                );
+                warned = Some(Instant::now());
             }
         })
         .await?;
-    if session.lock().is_ok_and(|s| s.dirty && s.revision > 0) {
+    if unsaved(&session) {
         eprintln!("Discarded unsaved feedback.");
     }
     Ok(())
