@@ -1,6 +1,6 @@
 use crate::core::{Comment, DiffKind, DiffRow, Session, Side, Snapshot, line_range, lines};
 use anyhow::{Context, Result, ensure};
-use crossterm::{
+use ratatui::crossterm::{
     event::{
         self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
         KeyModifiers,

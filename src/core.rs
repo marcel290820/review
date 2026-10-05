@@ -21,7 +21,10 @@ pub fn now() -> u64 {
         .as_secs()
 }
 pub fn hash(text: &str) -> String {
-    format!("{:x}", Sha256::digest(text.as_bytes()))
+    Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 pub fn id() -> String {
     format!("{:032x}", rand::random::<u128>())
