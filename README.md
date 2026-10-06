@@ -23,7 +23,7 @@ In later examples, `review` means `./target/release/review` or a copy you put on
 
 Without an interactive terminal, use `--browser` explicitly. `--tui` explicitly selects the terminal interface and still requires a terminal. `--help` lists all options. `--port 0` selects an available browser port and is the default.
 
-The save destination defaults to `review-feedback.json` in the invocation directory. The interfaces show its absolute path. Each save creates a new file: `feedback.json`, `feedback.json.1.json`, `feedback.json.2.json`, and so on. Existing files, including unrelated files and symlinks, remain untouched. The saved filename is reported after saving. The destination directory must exist. A failed save retains the session and its unsaved state.
+The save destination defaults to `review-feedback.json` in the invocation directory. The interfaces show its absolute path. Each save creates a new file: `feedback.json`, `feedback.json.1.json`, `feedback.json.2.json`, and so on. Existing files, including unrelated files and symlinks, remain untouched. The saved filename is reported after saving. The destination directory must exist. A failed save retains the session and its unsaved state. Feedback counts as unsaved when comments changed since the review was opened or last saved.
 
 ## Complete a review
 
@@ -104,42 +104,45 @@ The API exposes selected snapshots, comments, revision inspection, and the CLI-c
 
 ## Development and verification
 
-The checked-in `frontend/dist` bundle lets a Rust-only build work. When changing the frontend, use Node (verified with 24.21.0) and regenerate it before building Rust; CI fails when the committed bundle differs from a fresh build:
+The code is organized as one library with two interfaces:
+
+| Module | Responsibility |
+| --- | --- |
+| `src/feedback.rs` | The saved format, coordinate convention, target construction, and validation |
+| `src/session.rs` | One review in memory: comment changes, unsaved state, saving, disk revisions |
+| `src/files.rs` | Bounded text reads, symlink-free reads below a root, saves that never replace files |
+| `src/diff.rs` | Unified diff rows numbered like comment targets |
+| `src/git.rs` | Review content from read-only Git commands |
+| `src/tui/` | Terminal interface: state and keys (`app.rs`), drawing (`view.rs`), comment editor |
+| `src/http.rs` | Loopback HTTP adapter and inert Markdown rendering |
+| `frontend/src/` | Svelte browser interface; `lines.ts` mirrors the byte and line math |
+
+The checked-in `frontend/dist` bundle lets a Rust-only build work. When changing the frontend, use Node (verified with 24.21.0) and regenerate it before building Rust; CI fails when the committed bundle differs from a fresh build.
+
+One script runs every check: the frontend typecheck, unit tests, and build; `cargo fmt`, Clippy, and Rust tests; and the real-terminal PTY suite. CI runs the same script.
 
 ```sh
-cd frontend
-npm ci
-npm run check
-npm test
-npm run build
-cd ..
-cargo build --locked
-cargo test --locked
-cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
-python3 tests/tui_smoke.py
+(cd frontend && npm ci)
+.claude/check.sh
 ```
 
 The PTY checks require Unix, Python 3, and Git; fixtures and repositories are created automatically under a temporary directory. They drive actual terminal keys and inspect saved feedback and restored terminal settings.
 
-Actual browser checks use Playwright and a copied executable running outside the repository:
+Actual browser checks use Playwright and a copied executable running outside the repository. Install Chromium once, then include them in the check:
 
 ```sh
-cd frontend
-npx playwright install chromium --only-shell
-npm run test:browser
+(cd frontend && npx playwright install chromium --only-shell)
+REVIEW_BROWSER_TESTS=1 .claude/check.sh
 ```
 
 Chromium needs its platform libraries. On a minimal Ubuntu 24.04 environment, [tests/browser-deps.sh](tests/browser-deps.sh) downloads and extracts them into a temporary directory without root or system installation:
 
 ```sh
-# From the repository root:
 sh tests/browser-deps.sh /tmp/review-browser-deps-local
-cd frontend
-LD_LIBRARY_PATH=/tmp/review-browser-deps-local/lib/usr/lib/x86_64-linux-gnu npm run test:browser
+LD_LIBRARY_PATH=/tmp/review-browser-deps-local/lib/usr/lib/x86_64-linux-gnu REVIEW_BROWSER_TESTS=1 .claude/check.sh
 ```
 
-Set `REVIEW_BIN=/absolute/path/to/review` to test a different build. `PLAYWRIGHT_BROWSERS_PATH` can place test browser downloads under `/tmp`. The browser suite drives real pointer and keyboard interactions, follows browser → TUI → browser feedback, verifies revision inspection, old/new targets, offline assets, safe Markdown, edits from several tabs, and save failures. It writes a screenshot to `/tmp/review-artifacts/browser.png`.
+Set `REVIEW_BIN=/absolute/path/to/review` to run `npm run test:browser` or `python3 tests/tui_smoke.py` against a different build. `PLAYWRIGHT_BROWSERS_PATH` can place test browser downloads under `/tmp`. The browser suite drives real pointer and keyboard interactions, follows browser → TUI → browser feedback, verifies revision inspection, old/new targets, offline assets, safe Markdown, edits from several tabs, and save failures. It writes a screenshot to `/tmp/review-artifacts/browser.png`.
 
 See [VERIFICATION.md](VERIFICATION.md) for the completed local checks and their limits.
 
