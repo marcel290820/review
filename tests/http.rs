@@ -1,173 +1,170 @@
 use axum::{
+    Router,
     body::{Body, to_bytes},
     http::{Request, StatusCode},
 };
 use review::{
-    core::Session,
     http::{self, AppState},
+    session::Session,
 };
+use serde_json::{Value, json};
 use std::{
     fs,
     sync::{Arc, Mutex},
 };
 use tower::ServiceExt;
 
-fn setup() -> (tempfile::TempDir, axum::Router) {
+const HOST: &str = "127.0.0.1:3210";
+const TOKEN: &str = "test-session";
+
+fn app() -> (tempfile::TempDir, Router) {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("note.md"), "alpha 🦀\nbeta\n").unwrap();
-    let s = Session::open(
+    let session = Session::open(
         &[dir.path().join("note.md")],
         dir.path().join("feedback.json"),
     )
     .unwrap();
-    let app = http::router(AppState {
-        session: Arc::new(Mutex::new(s)),
-        token: "test-session".into(),
-        authority: "127.0.0.1:3210".into(),
+    let router = http::router(AppState {
+        session: Arc::new(Mutex::new(session)),
+        token: TOKEN.into(),
+        authority: HOST.into(),
     });
-    (dir, app)
+    (dir, router)
 }
-async fn call(
-    app: &axum::Router,
-    method: &str,
-    path: &str,
-    value: serde_json::Value,
-) -> (StatusCode, serde_json::Value) {
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method(method)
-                .uri(path)
-                .header("host", "127.0.0.1:3210")
-                .header("authorization", "Bearer test-session")
-                .header("content-type", "application/json")
-                .body(Body::from(value.to_string()))
-                .unwrap(),
-        )
-        .await
+
+async fn call(app: &Router, method: &str, path: &str, body: Value) -> (StatusCode, Value) {
+    let request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("host", HOST)
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
         .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = to_bytes(response.into_body(), 1 << 22).await.unwrap();
-    (
-        status,
-        serde_json::from_slice(&bytes)
-            .unwrap_or_else(|_| serde_json::json!({"error":String::from_utf8_lossy(&bytes)})),
-    )
+    let value = serde_json::from_slice(&bytes)
+        .unwrap_or_else(|_| json!({ "error": String::from_utf8_lossy(&bytes) }));
+    (status, value)
 }
+
 #[tokio::test]
-async fn http_roundtrip_rejects_bad_targets_and_browser_path_injection() {
-    let (dir, app) = setup();
-    let (status, content) = call(&app, "GET", "/api/content", serde_json::json!({})).await;
+async fn comments_round_trip_and_bad_targets_or_paths_are_rejected() {
+    let (dir, app) = app();
+    let (status, content) = call(&app, "GET", "/api/content", json!({})).await;
     assert_eq!(status, StatusCode::OK);
-    let f = &content["files"][0];
-    assert!(f["diff"].is_null());
+    let file = &content["files"][0];
+    assert!(file["diff"].is_null());
     assert!(content["previews"][0]["html"].is_string());
-    let s = &f["snapshots"][0];
-    let target = serde_json::json!({"file_id":f["id"],"snapshot_id":s["id"],"start_byte":0,"end_byte":10,"body":"request"});
-    let mut bad = target.clone();
-    bad["end_byte"] = 999.into();
-    assert_eq!(
-        call(&app, "POST", "/api/comments", bad).await.0,
-        StatusCode::BAD_REQUEST
-    );
+    let (_, state) = call(&app, "GET", "/api/state", json!({})).await;
+    assert_eq!(state["dirty"], false);
+
+    let snapshot = &file["snapshots"][0];
+    let target = json!({
+        "file_id": file["id"],
+        "snapshot_id": snapshot["id"],
+        "start_byte": 0,
+        "end_byte": 10,
+        "body": "request",
+    });
+    let mut outside = target.clone();
+    outside["end_byte"] = 999.into();
+    let mut inside_character = target.clone();
+    inside_character["end_byte"] = 7.into();
+    for bad in [outside, inside_character] {
+        let (status, _) = call(&app, "POST", "/api/comments", bad).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
     let (status, state) = call(&app, "POST", "/api/comments", target).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(state["dirty"], true);
-    let id = state["comments"][0]["id"].as_str().unwrap();
-    assert_eq!(
-        call(
-            &app,
-            "PUT",
-            &format!("/api/comments/{id}"),
-            serde_json::json!({"body":"updated"})
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
-    // Save takes no input: the destination stays the CLI-configured output.
-    assert_eq!(
-        call(
-            &app,
-            "POST",
-            "/api/save",
-            serde_json::json!({"path":"../unselected"})
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
+    assert_eq!(state["comments"][0]["target"]["quote"], "alpha 🦀");
+    let id = state["comments"][0]["id"].as_str().unwrap().to_owned();
+    let (status, _) = call(
+        &app,
+        "PUT",
+        &format!("/api/comments/{id}"),
+        json!({ "body": "updated" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Saving takes no input: the destination stays the CLI-configured output.
+    let (status, state) = call(
+        &app,
+        "POST",
+        "/api/save",
+        json!({ "path": "../unselected" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(state["dirty"], false);
     assert!(!dir.path().join("../unselected").exists());
-    let reopened = Session::reopen(
+    let saved = Session::reopen(
         &dir.path().join("feedback.json"),
         None,
         dir.path().join("next.json"),
     )
     .unwrap();
-    assert_eq!(reopened.feedback.comments[0].body, "updated");
-    let (status, state) = call(
-        &app,
-        "DELETE",
-        &format!("/api/comments/{id}"),
-        serde_json::json!({}),
-    )
-    .await;
+    assert_eq!(saved.comments()[0].body, "updated");
+
+    let (status, state) = call(&app, "DELETE", &format!("/api/comments/{id}"), json!({})).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(state["comments"], serde_json::json!([]));
-    let (status, state) = call(&app, "POST", "/api/refresh", serde_json::json!({})).await;
+    assert_eq!(state["comments"], json!([]));
+    let (status, _) = call(&app, "DELETE", &format!("/api/comments/{id}"), json!({})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, state) = call(&app, "POST", "/api/refresh", json!({})).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(state["disk"][0]["status"], "unchanged");
-    assert_eq!(
-        call(
-            &app,
-            "GET",
-            "/api/file?path=/etc/passwd",
-            serde_json::json!({})
-        )
-        .await
-        .0,
-        StatusCode::NOT_FOUND
-    );
+    let (status, _) = call(&app, "GET", "/api/file?path=/etc/passwd", json!({})).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
-async fn access_is_loopback_session_scoped_and_assets_have_strict_headers() {
-    let (_dir, app) = setup();
-    for (path, host, auth, origin, expected) in [
+async fn access_is_scoped_to_the_loopback_session_with_strict_headers() {
+    let (_dir, app) = app();
+    let bearer = format!("Bearer {TOKEN}");
+    for (path, host, authorization, origin, expected) in [
+        ("/api/state", HOST, "", "", StatusCode::UNAUTHORIZED),
         (
             "/api/state",
-            "127.0.0.1:3210",
-            "",
+            HOST,
+            "Bearer wrong",
             "",
             StatusCode::UNAUTHORIZED,
         ),
         (
             "/api/state",
             "evil.invalid:3210",
-            "Bearer test-session",
+            bearer.as_str(),
             "",
             StatusCode::FORBIDDEN,
         ),
         (
             "/api/state",
-            "127.0.0.1:3210",
-            "Bearer test-session",
+            HOST,
+            bearer.as_str(),
             "https://evil.invalid",
             StatusCode::FORBIDDEN,
         ),
-        ("/app.js", "127.0.0.1:3210", "", "", StatusCode::OK),
         (
-            "/../../VISION.md",
-            "127.0.0.1:3210",
-            "",
-            "",
-            StatusCode::NOT_FOUND,
+            "/api/state",
+            HOST,
+            bearer.as_str(),
+            "http://127.0.0.1:3210",
+            StatusCode::OK,
         ),
+        ("/app.js", HOST, "", "", StatusCode::OK),
+        ("/", HOST, "", "", StatusCode::OK),
+        ("/../../VISION.md", HOST, "", "", StatusCode::NOT_FOUND),
     ] {
         let mut request = Request::builder().uri(path).header("host", host);
-        if !auth.is_empty() {
-            request = request.header("authorization", auth);
+        if !authorization.is_empty() {
+            request = request.header("authorization", authorization);
         }
         if !origin.is_empty() {
             request = request.header("origin", origin);
@@ -177,18 +174,25 @@ async fn access_is_loopback_session_scoped_and_assets_have_strict_headers() {
             .oneshot(request.body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(response.status(), expected);
+        assert_eq!(response.status(), expected, "{path} {host} {origin}");
         assert_eq!(response.headers()["cache-control"], "no-store");
-        assert!(
-            response.headers()["content-security-policy"]
-                .to_str()
-                .unwrap()
-                .contains("default-src 'none'")
-        );
+        let policy = response.headers()["content-security-policy"]
+            .to_str()
+            .unwrap();
+        assert!(policy.contains("default-src 'none'"));
     }
-    let oversized = serde_json::json!({"body":"x".repeat(70000)});
-    assert_eq!(
-        call(&app, "POST", "/api/comments", oversized).await.0,
-        StatusCode::PAYLOAD_TOO_LARGE
-    );
+
+    let cross_site = Request::builder()
+        .uri("/api/state")
+        .header("host", HOST)
+        .header("authorization", &bearer)
+        .header("sec-fetch-site", "cross-site")
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(cross_site).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let oversized = json!({ "body": "x".repeat(70_000) });
+    let (status, _) = call(&app, "POST", "/api/comments", oversized).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
 }
