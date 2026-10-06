@@ -174,9 +174,20 @@ try {
   const diffSave = await save(diffUI.page, dif);
   assert.equal(diffSave.feedback.comments[0].target.side, 'old'); assert.equal(diffSave.feedback.comments[0].target.quote, 'old 🦀\n');
   assert.equal(diffSave.feedback.comments[1].target.side, 'new'); assert.equal(diffSave.feedback.comments[1].target.quote, 'new 🦀\n');
+  // A drag from the old side into the new side is rejected and drops the earlier target.
+  const textEdge = (text, atEnd) => diffUI.page.locator('.content [data-snapshot]', { hasText: text }).evaluate((span, atEnd) => {
+    const range = document.createRange(); range.selectNodeContents(span);
+    const r = range.getBoundingClientRect(); return { x: atEnd ? r.right - 0.2 : r.x + 0.2, y: r.y + r.height / 2 };
+  }, atEnd);
+  await expect(diffUI.page.getByLabel('Selected quote')).toHaveCount(1);
+  const from = await textEdge('old 🦀', false); const to = await textEdge('new 🦀', true);
+  await diffUI.page.mouse.move(from.x, from.y); await diffUI.page.mouse.down();
+  await diffUI.page.mouse.move(to.x, to.y, { steps: 15 }); await diffUI.page.mouse.up();
+  await expect(diffUI.page.getByRole('status')).toContainText('Select one diff side');
+  await expect(diffUI.page.getByLabel('Selected quote')).toHaveCount(0);
   assert.deepEqual(errors, []); assert.deepEqual(diffUI.errors, []); assert.deepEqual(diffUI.external, []);
   await diffUI.context.close(); dif.stop();
-  console.log(JSON.stringify({ browser: 'passed', checks: ['actual mouse selection', 'Unicode byte targets', 'range selection', 'create/edit/delete', 'multi-file', 'save collisions', 'safe Markdown', 'session security', 'last edit wins across tabs', 'browser → TUI → browser', 'revision inspection', 'mobile layout', 'old/new Git targets', 'bundled offline assets', 'failed save retention', 'server quit guard'] }));
+  console.log(JSON.stringify({ browser: 'passed', checks: ['actual mouse selection', 'Unicode byte targets', 'range selection', 'create/edit/delete', 'multi-file', 'save collisions', 'safe Markdown', 'session security', 'last edit wins across tabs', 'browser → TUI → browser', 'revision inspection', 'mobile layout', 'old/new Git targets', 'mixed-side drag rejection', 'bundled offline assets', 'failed save retention', 'server quit guard'] }));
 } finally {
   for (const server of servers) if (server.exitCode === null) server.kill('SIGTERM');
   await browser?.close();
