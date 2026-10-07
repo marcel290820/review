@@ -1,8 +1,8 @@
 //! Unified diff rows between two texts, numbered like [`crate::feedback::lines`].
 
 use serde::Serialize;
-use similar::{Algorithm, DiffTag, capture_diff_slices, group_diff_ops, udiff::UnifiedHunkHeader};
-use std::ops::Range;
+use similar::{Algorithm, DiffTag, capture_diff_slices, group_diff_ops};
+use std::{mem, ops::Range};
 
 const CONTEXT_LINES: usize = 3;
 /// Most words in a pair of changed lines that get word-level changes.
@@ -22,10 +22,13 @@ pub enum DiffKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct DiffRow {
     pub kind: DiffKind,
-    /// The line without its `\n`, or the hunk header or note.
+    /// The line without its `\n`, the lines a hunk covers, or the note.
     pub text: String,
     pub old_line: Option<usize>,
     pub new_line: Option<usize>,
+    /// Byte ranges of `text` that differ from the line it replaces or that replaces it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<Range<usize>>,
 }
 
 pub fn diff(old: &str, new: &str) -> Vec<DiffRow> {
@@ -38,35 +41,72 @@ pub fn diff(old: &str, new: &str) -> Vec<DiffRow> {
         capture_diff_slices(Algorithm::Myers, &old, &new),
         CONTEXT_LINES,
     ) {
+        let header = rows.len();
         rows.push(DiffRow {
             kind: DiffKind::Hunk,
-            text: UnifiedHunkHeader::new(&hunk).to_string(),
+            text: String::new(),
             old_line: None,
             new_line: None,
+            changes: Vec::new(),
         });
         for op in hunk {
             let (tag, old_lines, new_lines) = op.as_tag_tuple();
             if tag == DiffTag::Equal {
                 for (o, n) in old_lines.zip(new_lines) {
-                    push_line(
-                        &mut rows,
-                        DiffKind::Context,
-                        old[o],
-                        Some(o + 1),
-                        Some(n + 1),
-                    );
+                    let numbers = (Some(o + 1), Some(n + 1));
+                    push_line(&mut rows, DiffKind::Context, old[o], numbers, Vec::new());
                 }
+                continue;
+            }
+            // A replaced line is paired with its replacement to mark the words that changed.
+            let (mut removed, mut added): (Vec<_>, Vec<_>) = if tag == DiffTag::Replace {
+                let text = |line: &str| line.strip_suffix('\n').unwrap_or(line).to_owned();
+                old_lines
+                    .clone()
+                    .zip(new_lines.clone())
+                    .map(|(o, n)| changed_words(&text(old[o]), &text(new[n])))
+                    .unzip()
             } else {
-                for o in old_lines {
-                    push_line(&mut rows, DiffKind::Delete, old[o], Some(o + 1), None);
-                }
-                for n in new_lines {
-                    push_line(&mut rows, DiffKind::Add, new[n], None, Some(n + 1));
-                }
+                (Vec::new(), Vec::new())
+            };
+            for (k, o) in old_lines.enumerate() {
+                let changes = removed.get_mut(k).map(mem::take).unwrap_or_default();
+                push_line(
+                    &mut rows,
+                    DiffKind::Delete,
+                    old[o],
+                    (Some(o + 1), None),
+                    changes,
+                );
+            }
+            for (k, n) in new_lines.enumerate() {
+                let changes = added.get_mut(k).map(mem::take).unwrap_or_default();
+                push_line(
+                    &mut rows,
+                    DiffKind::Add,
+                    new[n],
+                    (None, Some(n + 1)),
+                    changes,
+                );
             }
         }
+        rows[header].text = hunk_label(&rows[header + 1..]);
     }
     rows
+}
+
+/// The lines a hunk covers, on the new side when it has any: "lines 6–20" or "line 6".
+fn hunk_label(rows: &[DiffRow]) -> String {
+    let span = |number: fn(&DiffRow) -> Option<usize>| {
+        let mut numbers = rows.iter().filter_map(number);
+        let first = numbers.next()?;
+        Some((first, numbers.next_back().unwrap_or(first)))
+    };
+    match span(|r| r.new_line).or_else(|| span(|r| r.old_line)) {
+        Some((first, last)) if first < last => format!("lines {first}–{last}"),
+        Some((first, _)) => format!("line {first}"),
+        None => String::new(),
+    }
 }
 
 /// Byte ranges of the words that differ between two versions of a line. Empty when the
@@ -138,8 +178,8 @@ fn push_line(
     rows: &mut Vec<DiffRow>,
     kind: DiffKind,
     line: &str,
-    old_line: Option<usize>,
-    new_line: Option<usize>,
+    (old_line, new_line): (Option<usize>, Option<usize>),
+    changes: Vec<Range<usize>>,
 ) {
     let text = line.strip_suffix('\n');
     rows.push(DiffRow {
@@ -147,6 +187,7 @@ fn push_line(
         text: text.unwrap_or(line).into(),
         old_line,
         new_line,
+        changes,
     });
     if text.is_none() {
         rows.push(DiffRow {
@@ -154,6 +195,7 @@ fn push_line(
             text: "\\ No newline at end of file".into(),
             old_line: None,
             new_line: None,
+            changes: Vec::new(),
         });
     }
 }
@@ -176,7 +218,7 @@ mod tests {
         assert_eq!(
             rows("a\rb\nold", "a\rb\nnew\n"),
             vec![
-                (DiffKind::Hunk, "@@ -1,2 +1,2 @@".into(), None, None),
+                (DiffKind::Hunk, "lines 1–2".into(), None, None),
                 (DiffKind::Context, "a\rb".into(), Some(1), Some(1)),
                 (DiffKind::Delete, "old".into(), Some(2), None),
                 (
@@ -188,7 +230,17 @@ mod tests {
                 (DiffKind::Add, "new".into(), None, Some(2)),
             ]
         );
-        assert_eq!(rows("", "x\n")[0].1, "@@ -0,0 +1 @@");
+        assert_eq!(rows("", "x\n")[0].1, "line 1");
+        assert_eq!(rows("a\nb\n", "")[0].1, "lines 1–2");
+        // Replaced lines carry the words that changed.
+        let replaced = diff("let total = 0;\n", "let total: u64 = 0;\n");
+        assert_eq!(
+            (replaced[1].kind, replaced[1].changes.clone()),
+            (DiffKind::Delete, vec![])
+        );
+        let added = &replaced[2];
+        let changes: Vec<_> = added.changes.iter().map(|r| (r.start, r.end)).collect();
+        assert_eq!((added.kind, changes), (DiffKind::Add, vec![(9, 14)]));
     }
 
     #[test]

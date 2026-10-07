@@ -8,5 +8,6 @@ pub mod feedback;
 pub mod files;
 pub mod git;
 pub mod http;
+pub mod markdown;
 pub mod session;
 pub mod tui;

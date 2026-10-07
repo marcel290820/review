@@ -4,11 +4,10 @@
 
 use super::{
     app::{App, Draft, Focus, Notice, Prompt, Row, View},
-    markdown,
     text::{clean, cleaned, fit, grapheme_width, pad, text_width, wrap},
     theme::Theme,
 };
-use crate::{diff::DiffKind, feedback::Side, session::DiskStatus};
+use crate::{diff::DiffKind, feedback::Side, markdown, session::DiskStatus};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},

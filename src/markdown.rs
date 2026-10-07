@@ -1,8 +1,9 @@
-//! Light Markdown styling for source lines. Marks byte ranges; the text itself is unchanged,
-//! so comment targets keep referring to exactly what is shown.
+//! Markdown for both interfaces: light styling marks for source lines, and inert HTML
+//! for the browser preview. Marks are byte ranges; the text itself is unchanged, so
+//! comment targets keep referring to exactly what is shown.
 
 use crate::feedback::lines;
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, html};
 use std::ops::Range;
 
 pub const HEADING: u16 = 1;
@@ -132,6 +133,20 @@ fn fences(text: &str, block: Range<usize>) -> Vec<Range<usize>> {
         .collect()
 }
 
+/// Renders Markdown as inert HTML: raw HTML becomes text, and links and images are
+/// reduced to their text, so a document cannot run scripts or request resources.
+pub fn html(text: &str) -> String {
+    let events = Parser::new(text).filter_map(|event| match event {
+        Event::Html(raw) | Event::InlineHtml(raw) => Some(Event::Text(raw)),
+        Event::Start(Tag::Link { .. } | Tag::Image { .. })
+        | Event::End(TagEnd::Link | TagEnd::Image) => None,
+        other => Some(other),
+    });
+    let mut output = String::new();
+    html::push_html(&mut output, events);
+    output
+}
+
 /// Consecutive bytes with the same nonzero flags.
 fn runs(flags: &[u16]) -> Vec<Mark> {
     let mut runs: Vec<Mark> = Vec::new();
@@ -148,6 +163,18 @@ fn runs(flags: &[u16]) -> Vec<Mark> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn html_is_inert() {
+        let html = html(
+            "# Heading\n<script>alert(1)</script>\n\n[x](javascript:evil) \
+             ![alt](https://example.invalid/img)\n<iframe src='x'></iframe>",
+        );
+        assert!(html.contains("<h1>Heading</h1>"));
+        for fragment in ["<script", "<iframe", "<img", "<a "] {
+            assert!(!html.contains(fragment), "{html}");
+        }
+    }
 
     #[test]
     fn marks_stay_on_their_source_lines() {

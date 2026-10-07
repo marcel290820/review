@@ -1,12 +1,10 @@
 //! Terminal review state and key handling, independent of drawing.
 
-use super::{
-    editor::Editor,
-    markdown::{self, Mark},
-};
+use super::editor::Editor;
 use crate::{
-    diff::{DiffKind, DiffRow, changed_words},
+    diff::{DiffKind, DiffRow},
     feedback::{ReviewFile, Side, Snapshot, line_range, lines},
+    markdown::{self, Mark},
     session::Session,
 };
 use anyhow::{Context, Result, ensure};
@@ -528,8 +526,7 @@ fn navigate(code: KeyCode, position: usize, len: usize) -> Option<usize> {
 /// and context lines `context_side`; without a context side the rows are read-only.
 /// `marks` style the old and new snapshot lines.
 fn diff_rows(diff: &[DiffRow], context_side: Option<Side>, marks: [&[Vec<Mark>]; 2]) -> Vec<Row> {
-    let mut rows: Vec<Row> = diff
-        .iter()
+    diff.iter()
         .map(|row| {
             let side = match row.kind {
                 DiffKind::Delete => Some(Side::Old),
@@ -560,50 +557,10 @@ fn diff_rows(diff: &[DiffRow], context_side: Option<Side>, marks: [&[Vec<Mark>];
                 ],
                 target,
                 marks: marks.cloned().unwrap_or_default(),
-                changes: Vec::new(),
+                changes: row.changes.clone(),
             }
         })
-        .collect();
-    // Pair each run of deleted lines with the added lines after it, line by line.
-    let mut i = 0;
-    while i < rows.len() {
-        let kind_run = |from: usize, kind| {
-            rows[from..]
-                .iter()
-                .take_while(|r| r.kind == Some(kind))
-                .count()
-        };
-        let deleted = kind_run(i, DiffKind::Delete);
-        let added = kind_run(i + deleted, DiffKind::Add);
-        for k in 0..deleted.min(added) {
-            let (old, new) = changed_words(&rows[i + k].text, &rows[i + deleted + k].text);
-            rows[i + k].changes = old;
-            rows[i + deleted + k].changes = new;
-        }
-        i += (deleted + added).max(1);
-    }
-    // A hunk header reads as the lines it covers, new side first, instead of `@@` notation.
-    for i in 0..rows.len() {
-        if rows[i].kind != Some(DiffKind::Hunk) {
-            continue;
-        }
-        let hunk = rows[i + 1..]
-            .iter()
-            .take_while(|r| r.kind != Some(DiffKind::Hunk));
-        let span = |side: usize| {
-            let mut numbers = hunk.clone().filter_map(|r| r.lines[side].map(|(_, n)| n));
-            let first = numbers.next()?;
-            Some((first, numbers.last().unwrap_or(first)))
-        };
-        if let Some((first, last)) = span(1).or_else(|| span(0)) {
-            rows[i].text = if first == last {
-                format!("line {first}")
-            } else {
-                format!("lines {first}–{last}")
-            };
-        }
-    }
-    rows
+        .collect()
 }
 
 fn source_rows(snapshot: &Snapshot, mut marks: Vec<Vec<Mark>>) -> Vec<Row> {

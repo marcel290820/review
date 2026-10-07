@@ -2,7 +2,6 @@
 
 mod app;
 mod editor;
-mod markdown;
 mod text;
 mod theme;
 mod view;

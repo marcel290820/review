@@ -3,6 +3,7 @@
 use crate::{
     diff::DiffRow,
     feedback::{Comment, ReviewFile, new_id},
+    markdown,
     session::{DiskState, Session},
 };
 use anyhow::Result;
@@ -262,11 +263,11 @@ async fn content(State(state): State<AppState>) -> ApiResult {
     let previews = session
         .files()
         .iter()
-        .filter(|f| f.path.ends_with(".md") || f.path.ends_with(".markdown"))
+        .filter(|f| markdown::is_markdown(&f.path))
         .flat_map(|f| &f.snapshots)
         .map(|s| Preview {
             snapshot_id: s.id.clone(),
-            html: markdown(&s.text),
+            html: markdown::html(&s.text),
         })
         .collect();
     Ok(Json(Content { files, previews }).into_response())
@@ -330,36 +331,4 @@ async fn save(State(state): State<AppState>) -> ApiResult {
     apply(&state, StatusCode::CONFLICT, |session| {
         session.save().map(drop)
     })
-}
-
-/// Renders Markdown as inert HTML: raw HTML becomes text, and links and images are
-/// reduced to their text, so a document cannot run scripts or request resources.
-pub fn markdown(text: &str) -> String {
-    use pulldown_cmark::{Event, Parser, Tag, TagEnd, html};
-    let events = Parser::new(text).filter_map(|event| match event {
-        Event::Html(raw) | Event::InlineHtml(raw) => Some(Event::Text(raw)),
-        Event::Start(Tag::Link { .. } | Tag::Image { .. })
-        | Event::End(TagEnd::Link | TagEnd::Image) => None,
-        other => Some(other),
-    });
-    let mut output = String::new();
-    html::push_html(&mut output, events);
-    output
-}
-
-#[cfg(test)]
-mod tests {
-    use super::markdown;
-
-    #[test]
-    fn markdown_is_inert() {
-        let html = markdown(
-            "# Heading\n<script>alert(1)</script>\n\n[x](javascript:evil) \
-             ![alt](https://example.invalid/img)\n<iframe src='x'></iframe>",
-        );
-        assert!(html.contains("<h1>Heading</h1>"));
-        for fragment in ["<script", "<iframe", "<img", "<a "] {
-            assert!(!html.contains(fragment), "{html}");
-        }
-    }
 }
