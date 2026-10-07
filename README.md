@@ -23,7 +23,7 @@ In later examples, `review` means `./target/release/review` or a copy you put on
 
 Without an interactive terminal, use `--browser` explicitly. `--tui` explicitly selects the terminal interface and still requires a terminal. `--help` lists all options. `--port 0` selects an available browser port and is the default.
 
-The save destination defaults to `review-feedback.json` in the invocation directory. The interfaces show its absolute path. Each save creates a new file: `feedback.json`, `feedback.json.1.json`, `feedback.json.2.json`, and so on. Existing files, including unrelated files and symlinks, remain untouched. The saved filename is reported after saving. The destination directory must exist. A failed save retains the session and its unsaved state. Feedback counts as unsaved when comments changed since the review was opened or last saved.
+The save destination defaults to `review-feedback.json` in the invocation directory. The browser shows its absolute path; in the TUI, `?` shows it. Each save creates a new file: `feedback.json`, `feedback.json.1.json`, `feedback.json.2.json`, and so on. Existing files, including unrelated files and symlinks, remain untouched. The saved filename is reported after saving. The destination directory must exist. A failed save retains the session and its unsaved state. Feedback counts as unsaved when comments changed since the review was opened or last saved.
 
 ## Complete a review
 
@@ -51,7 +51,7 @@ Both interfaces check disk revisions periodically. Inspect revisions shows addit
 | `h`/`l`, left/right arrows | Scroll long source lines horizontally |
 | `v`, move, `c` | Select a line range and write a comment |
 | `c` | Comment on the current line |
-| `Tab` | Switch focus between content and comments |
+| `Tab` | Open or close the list of all comments, grouped by file |
 | `Enter` on a comment | Revisit its original target |
 | `e` / `d` on a comment | Edit / confirm deletion |
 | `[` / `]` | Previous / next file |
@@ -59,9 +59,12 @@ Both interfaces check disk revisions periodically. Inspect revisions shows addit
 | `o` / `n` | Choose old / new targets for diff context lines |
 | `r` | Refresh and toggle the disk revision view |
 | `s` | Save feedback |
+| `?` | Show all keys and the save destination |
 | `q` / Ctrl+C | Quit; unsaved feedback prompts for save, discard, or cancel |
 
-Comment input supports multiline text, Unicode, arrows, Home/End, Backspace/Delete, and bracketed paste. Enter inserts a newline; Ctrl+S records the comment in memory; Esc cancels the draft. Press `s` afterward to save JSON. The TUI displays source text with line numbers, including Markdown syntax. It replaces terminal control characters for display while preserving the original bytes in feedback.
+Comment input supports multiline text, Unicode, arrows, Home/End, Backspace/Delete, and bracketed paste. Enter inserts a newline; Ctrl+S records the comment in memory; Esc cancels the draft. Press `s` afterward to save JSON. The TUI displays source text with line numbers, including Markdown syntax, which it styles lightly. Comments appear beneath the lines they target, and a draft shows where it will land while you write. In long files, a rail on the right edge marks the visible part and each comment. Diffs label each hunk with its lines and highlight changed words. The TUI replaces terminal control characters for display while preserving the original bytes in feedback.
+
+The TUI keeps your terminal's font and background. At startup it asks the terminal for its colors and derives a matching light or dark palette; terminals that do not answer get the dark palette. Colors use 24-bit values when `COLORTERM` is `truecolor` or `24bit`, otherwise the 256-color palette. `NO_COLOR` turns colors off.
 
 ### Browser controls
 
@@ -113,7 +116,7 @@ The code is organized as one library with two interfaces:
 | `src/files.rs` | Bounded text reads, symlink-free reads below a root, saves that never replace files |
 | `src/diff.rs` | Unified diff rows numbered like comment targets |
 | `src/git.rs` | Review content from read-only Git commands |
-| `src/tui/` | Terminal interface: state and keys (`app.rs`), drawing (`view.rs`), comment editor |
+| `src/tui/` | Terminal interface: state and keys (`app.rs`), drawing (`view.rs`), colors (`theme.rs`), Markdown styling, comment editor |
 | `src/http.rs` | Loopback HTTP adapter and inert Markdown rendering |
 | `frontend/src/` | Svelte browser interface; `lines.ts` mirrors the byte and line math |
 

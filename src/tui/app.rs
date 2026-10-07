@@ -1,14 +1,17 @@
 //! Terminal review state and key handling, independent of drawing.
 
-use super::editor::Editor;
+use super::{
+    editor::Editor,
+    markdown::{self, Mark},
+};
 use crate::{
-    diff::{DiffKind, DiffRow},
+    diff::{DiffKind, DiffRow, changed_words},
     feedback::{ReviewFile, Side, Snapshot, line_range, lines},
     session::Session,
 };
 use anyhow::{Context, Result, ensure};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::ops::Range;
+use std::{mem, ops::Range};
 
 /// Rows moved by Page Up and Page Down.
 const PAGE: usize = 12;
@@ -43,6 +46,22 @@ pub struct Draft {
     purpose: Purpose,
 }
 
+impl Draft {
+    /// The comment being edited; `None` for a new comment on the selected rows.
+    pub fn editing(&self) -> Option<&str> {
+        match &self.purpose {
+            Purpose::Add { .. } => None,
+            Purpose::Edit { comment_id } => Some(comment_id),
+        }
+    }
+}
+
+/// A short status message, shown until the next key press.
+pub struct Notice {
+    pub text: String,
+    pub error: bool,
+}
+
 enum Purpose {
     Add {
         file_id: String,
@@ -56,11 +75,19 @@ enum Purpose {
 
 /// One displayed line of content.
 pub struct Row {
+    /// The line without its terminator, a hunk header, or a message.
     pub text: String,
     /// `None` for source lines and messages.
     pub kind: Option<DiffKind>,
+    /// The numbered lines this row shows: the snapshot line of a source row, or the
+    /// old and new lines of a diff row.
+    pub lines: [Option<(Side, usize)>; 2],
     /// The snapshot line a comment on this row targets; `None` when read-only.
-    target: Option<(Side, usize)>,
+    pub target: Option<(Side, usize)>,
+    /// Markdown styling of `text`.
+    pub marks: Vec<Mark>,
+    /// Byte ranges of `text` that differ from the paired line on the other diff side.
+    pub changes: Vec<Range<usize>>,
 }
 
 pub struct App {
@@ -80,7 +107,9 @@ pub struct App {
     /// Index of the selected comment.
     pub comment: usize,
     pub prompt: Option<Prompt>,
-    pub message: String,
+    pub notice: Option<Notice>,
+    /// Whether the key list is shown.
+    pub help: bool,
     pub quit: bool,
 }
 
@@ -99,7 +128,8 @@ impl App {
             focus: Focus::Content,
             comment: 0,
             prompt: None,
-            message: "Select lines with v, move, then c. Tab opens comments.".into(),
+            notice: None,
+            help: false,
             quit: false,
         };
         app.rebuild();
@@ -110,6 +140,23 @@ impl App {
         &self.session.files()[self.file]
     }
 
+    /// Whether rows show old and new line numbers rather than one source line number.
+    pub fn diff_layout(&self) -> bool {
+        self.view == View::Disk || (self.view == View::Main && self.current_file().is_diff())
+    }
+
+    /// Comment indices in reading order: by file, then by position.
+    pub fn comment_order(&self) -> Vec<usize> {
+        let (files, comments) = (self.session.files(), self.session.comments());
+        let mut order: Vec<usize> = (0..comments.len()).collect();
+        order.sort_by_key(|&i| {
+            let t = &comments[i].target;
+            let file = files.iter().position(|f| f.id == t.file_id);
+            (file, t.side == Side::New, t.start_line, t.end_line)
+        });
+        order
+    }
+
     /// The selected rows as `(first, last)`; the cursor row without an active selection.
     pub fn selection(&self) -> (usize, usize) {
         let anchor = self.anchor.unwrap_or(self.cursor);
@@ -117,9 +164,20 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        self.notice = None;
         if let Err(e) = self.dispatch(key) {
-            self.message = format!("{e:#}");
+            self.notice = Some(Notice {
+                text: format!("{e:#}"),
+                error: true,
+            });
         }
+    }
+
+    fn say(&mut self, text: impl Into<String>) {
+        self.notice = Some(Notice {
+            text: text.into(),
+            error: false,
+        });
     }
 
     pub fn paste(&mut self, text: &str) {
@@ -142,7 +200,7 @@ impl App {
             Some(Prompt::Draft(draft)) => match key.code {
                 KeyCode::Esc => {
                     self.prompt = None;
-                    self.message = "Draft cancelled".into();
+                    self.say("Draft cancelled");
                 }
                 KeyCode::Char('s') if control => self.record()?,
                 _ => draft.editor.key(key),
@@ -171,7 +229,12 @@ impl App {
     }
 
     fn browse(&mut self, code: KeyCode, control: bool) -> Result<()> {
+        // Any key closes the key list; ? and Esc do nothing else.
+        if mem::take(&mut self.help) && matches!(code, KeyCode::Char('?') | KeyCode::Esc) {
+            return Ok(());
+        }
         match code {
+            KeyCode::Char('?') => self.help = true,
             KeyCode::Char('c') if control => self.request_quit(),
             KeyCode::Char('q') => self.request_quit(),
             KeyCode::Char('s') => self.save()?,
@@ -211,8 +274,10 @@ impl App {
                     None => self.content_key(code)?,
                 },
                 Focus::Comments => {
-                    match navigate(code, self.comment, self.session.comments().len()) {
-                        Some(comment) => self.comment = comment,
+                    let order = self.comment_order();
+                    let at = order.iter().position(|&i| i == self.comment).unwrap_or(0);
+                    match navigate(code, at, order.len()) {
+                        Some(at) => self.comment = order.get(at).copied().unwrap_or(0),
                         None => self.comments_key(code)?,
                     }
                 }
@@ -256,10 +321,7 @@ impl App {
                     },
                 }));
             }
-            KeyCode::Char('d') => {
-                self.prompt = Some(Prompt::ConfirmDelete);
-                self.message.clear();
-            }
+            KeyCode::Char('d') => self.prompt = Some(Prompt::ConfirmDelete),
             _ => {}
         }
         Ok(())
@@ -268,7 +330,6 @@ impl App {
     fn request_quit(&mut self) {
         if self.session.is_dirty() {
             self.prompt = Some(Prompt::ConfirmQuit);
-            self.message.clear();
         } else {
             self.quit = true;
         }
@@ -276,7 +337,7 @@ impl App {
 
     fn save(&mut self) -> Result<()> {
         let path = self.session.save()?;
-        self.message = format!("Saved {}", path.display());
+        self.say(format!("Saved to {}", path.display()));
         Ok(())
     }
 
@@ -299,7 +360,7 @@ impl App {
         }
         self.prompt = None;
         self.anchor = None;
-        self.message = "Comment recorded; s saves feedback to disk".into();
+        self.say("Comment recorded. Press s to save feedback.");
         Ok(())
     }
 
@@ -311,11 +372,15 @@ impl App {
             .context("No comment selected")?
             .id
             .clone();
+        let at = self.comment_order().iter().position(|&i| i == self.comment);
         self.session.delete_comment(&id)?;
-        self.comment = self
-            .comment
-            .min(self.session.comments().len().saturating_sub(1));
-        self.message = "Comment deleted; s saves feedback to disk".into();
+        // Select the comment that took the deleted one's place in the list.
+        let order = self.comment_order();
+        self.comment = at
+            .and_then(|at| order.get(at.min(order.len().saturating_sub(1))))
+            .copied()
+            .unwrap_or(0);
+        self.say("Comment deleted. Press s to save feedback.");
         Ok(())
     }
 
@@ -330,7 +395,7 @@ impl App {
             .context("The comment's file is not in this review")?;
         let (side, first, last) = (target.side, target.start_line, target.end_line);
         self.show(file, View::Snapshot(side), first - 1);
-        self.message = format!("Original {side} L{first}–{last}");
+        self.say(format!("Original {side} L{first}–{last}"));
         Ok(())
     }
 
@@ -338,7 +403,7 @@ impl App {
     fn cycle_view(&mut self) {
         let file = self.current_file();
         if !file.is_diff() {
-            self.message = "b switches sides of Git changes; this file has one source".into();
+            self.say("b switches sides of Git changes; this file has one source");
             return;
         }
         let sides: Vec<Side> = file.snapshots.iter().map(|s| s.side).collect();
@@ -353,7 +418,7 @@ impl App {
     fn set_context_side(&mut self, side: Side) {
         self.context_side = side;
         self.rebuild();
-        self.message = format!("Diff context lines target the {side} side");
+        self.say(format!("Diff context lines target the {side} side"));
     }
 
     fn show(&mut self, file: usize, view: View, cursor: usize) {
@@ -367,18 +432,32 @@ impl App {
 
     fn rebuild(&mut self) {
         let file = &self.session.files()[self.file];
+        let marks = |side| match file.snapshot(side) {
+            Some(snapshot) if markdown::is_markdown(&file.path) => markdown::marks(&snapshot.text),
+            _ => Vec::new(),
+        };
         self.rows = match self.view {
             View::Main => match self.session.diff(self.file) {
-                Some(diff) => diff_rows(diff, Some(self.context_side)),
-                None => source_rows(&file.snapshots[0]),
+                Some(diff) => diff_rows(
+                    diff,
+                    Some(self.context_side),
+                    [&marks(Side::Old), &marks(Side::New)],
+                ),
+                None => {
+                    let snapshot = &file.snapshots[0];
+                    source_rows(snapshot, marks(snapshot.side))
+                }
             },
-            View::Snapshot(side) => file.snapshot(side).map(source_rows).unwrap_or_default(),
+            View::Snapshot(side) => file
+                .snapshot(side)
+                .map(|snapshot| source_rows(snapshot, marks(side)))
+                .unwrap_or_default(),
             View::Disk => {
                 let disk = self.session.disk(self.file);
                 if disk.diff.is_empty() {
                     vec![Row::message(&disk.message)]
                 } else {
-                    diff_rows(&disk.diff, None)
+                    diff_rows(&disk.diff, None, [&[], &[]])
                 }
             }
         };
@@ -423,7 +502,10 @@ impl Row {
         Self {
             text: text.into(),
             kind: None,
+            lines: [None, None],
             target: None,
+            marks: Vec::new(),
+            changes: Vec::new(),
         }
     }
 }
@@ -444,9 +526,10 @@ fn navigate(code: KeyCode, position: usize, len: usize) -> Option<usize> {
 
 /// Rows of a unified diff. Deleted lines target the old side, added lines the new side,
 /// and context lines `context_side`; without a context side the rows are read-only.
-fn diff_rows(diff: &[DiffRow], context_side: Option<Side>) -> Vec<Row> {
-    let number = |line: Option<usize>| line.map(|n| n.to_string()).unwrap_or_default();
-    diff.iter()
+/// `marks` style the old and new snapshot lines.
+fn diff_rows(diff: &[DiffRow], context_side: Option<Side>, marks: [&[Vec<Mark>]; 2]) -> Vec<Row> {
+    let mut rows: Vec<Row> = diff
+        .iter()
         .map(|row| {
             let side = match row.kind {
                 DiffKind::Delete => Some(Side::Old),
@@ -462,34 +545,78 @@ fn diff_rows(diff: &[DiffRow], context_side: Option<Side>) -> Vec<Row> {
                 };
                 Some((side, line?))
             });
-            let marker = match row.kind {
-                DiffKind::Add => '+',
-                DiffKind::Delete => '-',
-                DiffKind::Context => ' ',
-                DiffKind::Hunk | DiffKind::Note => '·',
+            // Context text is the same on both sides; the new side's marks serve it.
+            let marks = match row.kind {
+                DiffKind::Delete => row.old_line.and_then(|n| marks[0].get(n - 1)),
+                DiffKind::Add | DiffKind::Context => row.new_line.and_then(|n| marks[1].get(n - 1)),
+                DiffKind::Hunk | DiffKind::Note => None,
             };
             Row {
-                text: format!(
-                    "{:>5} {:>5} {marker} {}",
-                    number(row.old_line),
-                    number(row.new_line),
-                    without_line_end(&row.text)
-                ),
+                text: without_line_end(&row.text).into(),
                 kind: Some(row.kind),
+                lines: [
+                    row.old_line.map(|n| (Side::Old, n)),
+                    row.new_line.map(|n| (Side::New, n)),
+                ],
                 target,
+                marks: marks.cloned().unwrap_or_default(),
+                changes: Vec::new(),
             }
         })
-        .collect()
+        .collect();
+    // Pair each run of deleted lines with the added lines after it, line by line.
+    let mut i = 0;
+    while i < rows.len() {
+        let kind_run = |from: usize, kind| {
+            rows[from..]
+                .iter()
+                .take_while(|r| r.kind == Some(kind))
+                .count()
+        };
+        let deleted = kind_run(i, DiffKind::Delete);
+        let added = kind_run(i + deleted, DiffKind::Add);
+        for k in 0..deleted.min(added) {
+            let (old, new) = changed_words(&rows[i + k].text, &rows[i + deleted + k].text);
+            rows[i + k].changes = old;
+            rows[i + deleted + k].changes = new;
+        }
+        i += (deleted + added).max(1);
+    }
+    // A hunk header reads as the lines it covers, new side first, instead of `@@` notation.
+    for i in 0..rows.len() {
+        if rows[i].kind != Some(DiffKind::Hunk) {
+            continue;
+        }
+        let hunk = rows[i + 1..]
+            .iter()
+            .take_while(|r| r.kind != Some(DiffKind::Hunk));
+        let span = |side: usize| {
+            let mut numbers = hunk.clone().filter_map(|r| r.lines[side].map(|(_, n)| n));
+            let first = numbers.next()?;
+            Some((first, numbers.last().unwrap_or(first)))
+        };
+        if let Some((first, last)) = span(1).or_else(|| span(0)) {
+            rows[i].text = if first == last {
+                format!("line {first}")
+            } else {
+                format!("lines {first}–{last}")
+            };
+        }
+    }
+    rows
 }
 
-fn source_rows(snapshot: &Snapshot) -> Vec<Row> {
+fn source_rows(snapshot: &Snapshot, mut marks: Vec<Vec<Mark>>) -> Vec<Row> {
     lines(&snapshot.text)
         .into_iter()
         .enumerate()
         .map(|(i, range)| Row {
-            text: format!("{:>5} {}", i + 1, without_line_end(&snapshot.text[range])),
+            text: without_line_end(&snapshot.text[range]).into(),
             kind: None,
+            lines: [Some((snapshot.side, i + 1)), None],
             target: Some((snapshot.side, i + 1)),
+            marks: marks.get_mut(i).map(mem::take).unwrap_or_default(),
+            changes: Vec::new(),
         })
         .collect()
 }
@@ -529,7 +656,8 @@ mod tests {
         press(&mut app, &[KeyCode::Char('q'), KeyCode::Char('s')]);
         assert!(!app.quit);
         assert!(matches!(app.prompt, Some(Prompt::ConfirmQuit)));
-        assert!(app.message.contains("Save directory does not exist"));
+        let notice = app.notice.as_ref().unwrap();
+        assert!(notice.error && notice.text.contains("Save directory does not exist"));
 
         fs::create_dir(dir.path().join("missing")).unwrap();
         press(&mut app, &[KeyCode::Char('s')]);
@@ -563,7 +691,11 @@ mod tests {
             ],
         );
         assert!(app.prompt.is_none());
-        assert!(app.message.starts_with("Select a single diff side"));
+        assert!(
+            app.notice
+                .as_ref()
+                .is_some_and(|n| n.text.starts_with("Select a single diff side"))
+        );
 
         press(
             &mut app,
@@ -583,5 +715,31 @@ mod tests {
             (target.side, target.quote.as_str()),
             (Side::Old, "context\nold\n")
         );
+    }
+
+    #[test]
+    fn the_comment_list_follows_reading_order() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "one\ntwo\nthree\n").unwrap();
+        let session =
+            Session::open(&[dir.path().join("a.md")], dir.path().join("out.json")).unwrap();
+        let mut app = App::new(session);
+        // Recorded bottom-up: comment 0 is on line 3, comment 1 on line 1.
+        press(&mut app, &[KeyCode::Char('G')]);
+        record(&mut app, "third");
+        press(&mut app, &[KeyCode::Char('g')]);
+        record(&mut app, "first");
+        assert_eq!(app.comment_order(), [1, 0]);
+
+        press(&mut app, &[KeyCode::Tab, KeyCode::Char('g')]);
+        assert_eq!(app.comment, 1);
+        press(&mut app, &[KeyCode::Char('j')]);
+        assert_eq!(app.comment, 0);
+        // Deleting the first listed comment selects the one that moves into its place.
+        press(
+            &mut app,
+            &[KeyCode::Char('k'), KeyCode::Char('d'), KeyCode::Char('y')],
+        );
+        assert_eq!(app.session.comments()[app.comment].body, "third");
     }
 }

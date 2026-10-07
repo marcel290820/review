@@ -28,7 +28,7 @@ class Terminal:
                                         env={**os.environ, 'TERM': 'xterm-256color'})
         self.output = b''
         self.columns = 120
-        self.expect('Review')
+        self.expect('review')
 
     def drain(self, seconds=0.15):
         deadline = time.monotonic() + seconds
@@ -39,6 +39,10 @@ class Terminal:
                     if not data:
                         break
                     self.output += data
+                    # Answer the device attributes query like a terminal that does not
+                    # report its colors, so color detection returns at once.
+                    if b'\x1b[c' in data:
+                        os.write(self.master, b'\x1b[?62;22c')
                 except OSError as error:
                     if error.errno == errno.EIO:
                         break
