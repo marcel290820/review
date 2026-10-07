@@ -1,6 +1,6 @@
 # Architecture and technology proposal
 
-This draft proposes the foundations to agree on before implementation. It follows [the vision](VISION.md) and [rationale](RATIONALE.md): open ordinary files, inspect them, attach precise comments, and save feedback an existing agent can use. Both interfaces should make content easy to consume and commenting easy to do.
+This draft proposes the foundations to agree on before implementation. It follows [the vision](vision.md) and [rationale](rationale.md): open ordinary files, inspect them, attach precise comments, and save feedback an existing agent can use. Both interfaces should make content easy to consume and commenting easy to do.
 
 ## One local application with two interfaces
 
