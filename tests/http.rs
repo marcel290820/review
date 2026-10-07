@@ -57,7 +57,8 @@ async fn comments_round_trip_and_bad_targets_or_paths_are_rejected() {
     assert_eq!(status, StatusCode::OK);
     let file = &content["files"][0];
     assert!(file["diff"].is_null());
-    assert!(content["previews"][0]["html"].is_string());
+    assert!(content["markdown"][0]["html"].is_string());
+    assert!(content["markdown"][0]["marks"].is_array());
     let (_, state) = call(&app, "GET", "/api/state", json!({})).await;
     assert_eq!(state["dirty"], false);
 

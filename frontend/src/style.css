@@ -1,341 +1,1237 @@
+/* Review in the browser. Blue belongs to the review layer: comments, selection, the cursor,
+   and focus. Content stays neutral: Markdown through weight and quiet syntax, code in slate. */
+
+/* JetBrains Mono and IBM Plex Sans, Latin and Latin Extended; see public/fonts/README.md. */
+@font-face {
+  font-family: 'Review Mono';
+  src: url('/fonts/mono.woff2') format('woff2');
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Review Mono';
+  src: url('/fonts/mono-ext.woff2') format('woff2');
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'Review Mono';
+  src: url('/fonts/mono-italic.woff2') format('woff2');
+  font-weight: 100 800;
+  font-style: italic;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Review Mono';
+  src: url('/fonts/mono-italic-ext.woff2') format('woff2');
+  font-weight: 100 800;
+  font-style: italic;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'Review Sans';
+  src: url('/fonts/sans.woff2') format('woff2');
+  font-weight: 100 700;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Review Sans';
+  src: url('/fonts/sans-ext.woff2') format('woff2');
+  font-weight: 100 700;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: 'Review Sans';
+  src: url('/fonts/sans-italic.woff2') format('woff2');
+  font-weight: 100 700;
+  font-style: italic;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'Review Sans';
+  src: url('/fonts/sans-italic-ext.woff2') format('woff2');
+  font-weight: 100 700;
+  font-style: italic;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 :root {
-  --text: #1b2937;
-  --muted: #617687;
-  --page: #f4f6f8;
-  --surface: #fff;
-  --border: #d3dce4;
-  --control-border: #b6c3ce;
-  --accent: #658dae;
-  --accent-soft: #e3eef7;
-  --focus: #4c91c4;
-  --mono: ui-monospace, SFMono-Regular, monospace;
-  font-family: system-ui, sans-serif;
-  color: var(--text);
-  background: var(--page);
-  line-height: 1.5;
+  color-scheme: light;
+  /* The content column, shared by the rows, the composer, and the cards. */
+  --column: 1080px;
+  /* Fog: a cool paper with ink-blue text. */
+  --page: #f4f7fa;
+  --surface: #fbfcfe;
+  --ink: #1a2735;
+  --muted: #566879;
+  --faint: #74869a;
+  --rule: #dbe3eb;
+  --accent: #2f6db3;
+  --on-accent: #ffffff;
+  --note: #2b5d97;
+  --wash: #e0eaf6;
+  --wash-strong: #c7dbf1;
+  --cursor: #ebf1f8;
+  --code: #45596e;
+  --add: #2e7d4f;
+  --add-row: #e5f3ea;
+  --add-word: #c1e3cc;
+  --delete: #b4424f;
+  --delete-row: #fbe9ec;
+  --delete-word: #f2c6cd;
+  --shadow: 0 -12px 32px -24px rgb(26 39 53 / 45%);
+
+  --mono: 'Review Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --sans: 'Review Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    /* Deep water: a blue night, never black. */
+    --page: #0e1824;
+    --surface: #122031;
+    --ink: #d3dde8;
+    --muted: #8d9fb2;
+    --faint: #66798e;
+    --rule: #1f2e3f;
+    --accent: #7fb0e8;
+    --on-accent: #0e1824;
+    --note: #93bcef;
+    --wash: #1a2e46;
+    --wash-strong: #26476d;
+    --cursor: #132336;
+    --code: #a5b6c8;
+    --add: #8cc5a0;
+    --add-row: #172b2c;
+    --add-word: #2b4b42;
+    --delete: #e5949f;
+    --delete-row: #2a2333;
+    --delete-word: #4d3443;
+    --shadow: 0 -12px 32px -24px rgb(0 0 0 / 80%);
+  }
 }
 
 * {
   box-sizing: border-box;
 }
 
+html,
 body {
+  height: 100%;
   margin: 0;
 }
 
-h1 {
-  margin: 0;
-  font-size: 1.5rem;
+body {
+  background: var(--page);
+  color: var(--ink);
+  font: 14px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
 }
 
-h2 {
-  margin-top: 0;
-  font-size: 1.1rem;
-}
-
-code {
-  overflow-wrap: anywhere;
-}
-
-button,
-select,
-input,
-textarea {
-  font: inherit;
-  color: inherit;
-  background: var(--surface);
-  border: 1px solid var(--control-border);
-  border-radius: 0.3rem;
-  padding: 0.35rem 0.65rem;
+#app {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr);
+  height: 100dvh;
 }
 
 button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
   cursor: pointer;
 }
 
-button:hover,
-button[aria-pressed='true'] {
-  background: var(--accent-soft);
-  border-color: var(--accent);
-}
-
 button:disabled {
-  opacity: 0.5;
   cursor: default;
+  opacity: 0.5;
 }
 
 :focus-visible {
-  outline: 3px solid var(--focus);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
+  border-radius: 3px;
+}
+
+::selection {
+  background: var(--wash-strong);
+}
+
+::highlight(choice) {
+  background: var(--wash-strong);
+}
+
+kbd {
+  font: 500 0.92em var(--mono);
+  color: var(--ink);
+}
+
+code {
+  font-family: var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.quiet {
+  color: var(--muted);
+  font: 500 13px var(--sans);
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.quiet:hover {
+  color: var(--ink);
+  background: var(--cursor);
+}
+
+/* Header: the files, and the view of the current one. */
+
+/* Header, key line, and cards keep their contents in the content column. */
+header,
+footer {
+  font-size: 13px;
 }
 
 header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 1.2rem;
-  padding: 1rem 1.5rem;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--mono);
 }
 
-.destination {
+.bar {
+  display: flex;
+  align-items: stretch;
+  gap: 24px;
+  max-width: var(--column);
+  height: 46px;
+  margin: 0 auto;
+  padding: 0 28px 0 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  margin-left: -2px;
+  gap: 0.6ch;
+  color: var(--muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* The brand mark: a small diamond in the accent. */
+.mark {
+  width: 7px;
+  height: 7px;
+  margin-right: 2px;
+  background: var(--accent);
+  transform: rotate(45deg);
+}
+
+.dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 0.8ch;
+  border-radius: 50%;
+  background: currentColor;
+  vertical-align: 1px;
+}
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  min-width: 0;
   flex: 1;
-  overflow-wrap: anywhere;
-  font-size: 0.9rem;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
-.badge {
-  margin-left: 0.5rem;
-  padding: 0.15rem 0.5rem;
-  border-radius: 1rem;
-  background: #e8eef4;
-  font-size: 0.8rem;
+.tab {
+  position: relative;
+  padding: 0 10px;
+  margin-bottom: -1px;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
-.status {
-  min-height: 2.5rem;
-  padding: 0.5rem 1.5rem;
-  background: #e7eff5;
-  overflow-wrap: anywhere;
+.tab:hover {
+  color: var(--ink);
 }
 
-nav {
+.tab[aria-current='page'] {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* The current file sits on the header's rule, which turns to the accent beneath it. */
+.tab[aria-current='page']::after {
+  content: '';
+  position: absolute;
+  inset: auto 6px 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--accent);
+}
+
+.count {
+  margin-left: 0.8ch;
+  color: var(--note);
+  font-weight: 500;
+}
+
+.views {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: 0.6rem;
-  margin: 1rem 1.5rem;
+  gap: 16px;
+  white-space: nowrap;
 }
 
-nav select {
-  max-width: 26rem;
+.switch {
+  display: flex;
+  gap: 2px;
 }
 
-.revision-status {
-  margin: 0 1.5rem 1rem;
-  color: #4a5f71;
-  font-size: 0.9rem;
+.switch button {
+  padding: 3px 8px;
+  border-radius: 5px;
+  color: var(--faint);
 }
 
-.revision-status.changed {
-  color: #8b4b04;
+.switch button:hover {
+  color: var(--ink);
 }
+
+.switch button[aria-pressed='true'] {
+  color: var(--accent);
+  font-weight: 700;
+  background: var(--cursor);
+}
+
+.disk-flag,
+.disk-view {
+  color: var(--accent);
+}
+
+.disk-flag.error {
+  color: var(--delete);
+}
+
+.muted {
+  color: var(--muted);
+  margin-left: 1ch;
+}
+
+/* Content: one column of numbered lines, with comments hanging beneath them. */
 
 main {
-  display: grid;
-  grid-template-columns: minmax(0, 2fr) minmax(16rem, 1fr);
-  gap: 1rem;
-  padding: 0 1.5rem 1.5rem;
+  position: relative;
+  overflow: auto;
+  scroll-padding: 48px 0 96px;
+  scrollbar-width: thin;
 }
 
-section,
-aside {
+.loading {
+  padding: 48px 20px;
+  color: var(--muted);
+  text-align: center;
+}
+
+/* Line heights are fixed lengths, so gutter numbers and text share their lines. */
+.doc {
+  /* The gutter fits the longest line number, in the numbers' smaller font, and the rail
+     runs between the numbers and the text. */
+  --digits: 3;
+  --gutter: calc(var(--digits) * 0.86ch + 4.5ch);
+  --rail: calc(var(--gutter) - 1.75ch);
+  max-width: var(--column);
+  margin: 0 auto;
+  padding: 28px 28px 112px 16px;
+  font: 14px/1.7em var(--mono);
+  font-variant-ligatures: none;
+}
+
+.doc.diff {
+  --gutter: calc(var(--digits) * 1.72ch + 7ch);
+  --rail: calc(var(--gutter) - 2.9ch);
+}
+
+.doc.diff .gutter {
+  padding-right: 3.75ch;
+}
+
+/* The browser lays out only the chunks in view; `auto` remembers their measured height. */
+.chunk {
+  content-visibility: auto;
+}
+
+.row {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--gutter) minmax(0, 1fr);
+  min-height: 1.7em;
+}
+
+.gutter {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 1ch;
+  padding-right: 2.75ch;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.n {
+  min-width: calc(var(--digits) * 1ch);
+  color: var(--faint);
+  font-size: 12px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+button.n:hover {
+  color: var(--accent);
+}
+
+.sign {
+  position: absolute;
+  left: calc(var(--gutter) - 1.6ch);
+  width: 1ch;
+}
+
+.add .sign {
+  color: var(--add);
+}
+
+.delete .sign {
+  color: var(--delete);
+}
+
+.text {
   min-width: 0;
 }
 
-.content,
-form,
-aside {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0.4rem;
-}
-
-.content {
-  height: 55vh;
-  min-height: 15rem;
-  overflow: auto;
-  padding: 0.65rem 0;
-}
-
-.source-row {
-  display: flex;
-  width: max-content;
-  min-width: 100%;
-  min-height: 1.6rem;
-  font-family: var(--mono);
-  font-size: 0.9rem;
-  white-space: pre;
-}
-
-.source-row > span {
-  padding: 0 0.6rem;
-}
-
-.line-number,
-.diff-gutter {
-  flex: 0 0 4rem;
-  padding: 0 0.65rem;
-  border: 0;
-  border-right: 1px solid #e5e9ed;
-  border-radius: 0;
-  background: #f8fafc;
-  color: #697e8e;
-  text-align: right;
-  user-select: none;
-}
-
-.diff-gutter {
-  display: flex;
-  flex-basis: 7rem;
-  gap: 0.2rem;
-  padding: 0;
-}
-
-.diff-gutter > * {
-  width: 3.5rem;
-}
-
-.diff-gutter button {
-  padding: 0;
-  border: 0;
-  font: inherit;
-}
-
-.revision-gutter {
-  display: inline-block;
-  flex-shrink: 0;
-  width: 8rem;
-  color: #697e8e;
-}
-
-.add {
-  background: #e8f7eb;
-}
-
-.delete {
-  background: #fcebed;
-}
-
-.hunk {
-  background: #edf4f9;
-  color: #276080;
-}
-
-.note {
-  color: #667;
-}
-
-.selected {
-  background: #dceaf7;
-}
-
-.markdown {
-  padding: 0.25rem 1.5rem;
+.t {
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.markdown pre {
-  overflow-x: auto;
-  padding: 1rem;
-  background: #f1f4f7;
+.row.cur {
+  background: var(--cursor);
 }
 
-.markdown blockquote {
-  padding-left: 1rem;
-  border-left: 3px solid #c1cfda;
+.row.cur .n {
+  color: var(--accent);
+  font-weight: 700;
 }
 
-form {
-  margin-top: 0.8rem;
-  padding: 1rem;
+.row.add {
+  background: var(--add-row);
 }
 
-form small {
-  display: block;
-  margin-top: 0.6rem;
-  color: #647787;
+.row.delete {
+  background: var(--delete-row);
 }
 
-.range {
+.add .w {
+  background: var(--add-word);
+  border-radius: 2px;
+}
+
+.delete .w {
+  background: var(--delete-word);
+  border-radius: 2px;
+}
+
+/* A selection is one band, rounded at its outer corners only. Added and deleted lines keep
+   their own tint, and their blue rail and number mark the selection. */
+.row.sel {
+  background: var(--wash);
+}
+
+.row.sel.add {
+  background: var(--add-row);
+}
+
+.row.sel.delete {
+  background: var(--delete-row);
+}
+
+.row.sel-first {
+  border-top-left-radius: 4px;
+  border-top-right-radius: 4px;
+}
+
+.row.sel-last {
+  border-bottom-left-radius: 4px;
+  border-bottom-right-radius: 4px;
+}
+
+.row.sel .n {
+  color: var(--accent);
+}
+
+/* The rail beside commented lines, from which their comments hang. Selected lines carry
+   it in the accent: the thread a new comment will hang from. */
+.row.covered::after,
+.row.sel::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 var(--rail);
+  width: 2px;
+  background: var(--note);
+  opacity: 0.75;
+}
+
+.row.sel::after {
+  background: var(--accent);
+  opacity: 1;
+}
+
+.row.hunk {
   display: flex;
-  flex-wrap: wrap;
-  align-items: end;
-  gap: 0.6rem;
+  align-items: center;
+  gap: 1.5ch;
+  margin: 14px 0 6px;
+  color: var(--faint);
+  font: 12.5px/1.7 var(--sans);
 }
 
-.range label {
-  font-size: 0.85rem;
+.row.hunk::before,
+.row.hunk::after {
+  content: '';
+  height: 1px;
+  background: var(--rule);
 }
 
-input {
-  display: block;
-  width: 6rem;
+.row.hunk::before {
+  width: calc(var(--gutter) - 1.5ch);
+}
+
+.row.hunk::after {
+  flex: 1;
+}
+
+.row.note .t {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* Markdown, in neutral weights. */
+.m-q {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.m-c {
+  color: var(--code);
+}
+
+.m-x {
+  color: var(--faint);
+  font-weight: 400;
+}
+
+.m-h,
+.m-b {
+  font-weight: 700;
+}
+
+.m-h:not(.m-x) {
+  color: var(--ink);
+}
+
+.m-i {
+  font-style: italic;
+}
+
+.m-s {
+  text-decoration: line-through;
+}
+
+.m-a {
+  text-decoration: underline;
+  text-decoration-color: var(--faint);
+  text-underline-offset: 3px;
+}
+
+/* The way into the composer: blue text after the selection, in the thread's voice. */
+.pill {
+  margin-left: 2ch;
+  color: var(--accent);
+  font: 600 12.5px/1 var(--sans);
+  white-space: nowrap;
+}
+
+.pill:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.pill kbd {
+  margin-left: 0.6ch;
+  color: inherit;
+  opacity: 0.7;
+}
+
+.end {
+  margin: 18px 0 0 var(--gutter);
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.end::before {
+  content: '';
+  display: inline-block;
+  width: 2.5ch;
+  height: 1px;
+  margin-right: 1ch;
+  background: var(--rule);
+  vertical-align: middle;
+}
+
+/* A comment, hanging on a thread that curls from the rail into the text column. */
+.note {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--gutter) minmax(0, 62ch);
+  align-items: start;
+  margin-bottom: 10px;
+  font-family: var(--sans);
+}
+
+.note:has(+ .note) {
+  margin-bottom: 4px;
+}
+
+.note::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: var(--rail);
+  width: calc(var(--gutter) - var(--rail) - 0.6ch);
+  height: 12px;
+  border-left: 2px solid var(--note);
+  border-bottom: 2px solid var(--note);
+  border-bottom-left-radius: 8px;
+  opacity: 0.75;
+}
+
+/* Further comments on the same lines continue the rail. */
+.note:has(+ .note)::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto -4px var(--rail);
+  width: 2px;
+  background: var(--note);
+  opacity: 0.75;
+}
+
+.note p {
+  grid-column: 2;
+  margin: 0;
+  padding-top: 1px;
+  color: var(--note);
+  font-size: 14.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.note.chosen p {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* A comment's actions appear over its right end on hover, so they take no room. */
+.note-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  gap: 2px;
+  padding-left: 8px;
+  background: var(--page);
+  opacity: 0;
+}
+
+.note:hover .note-actions,
+.note:focus-within .note-actions {
+  opacity: 1;
+}
+
+/* Touch screens show a comment's actions beneath it. */
+@media (hover: none) {
+  .note {
+    grid-template-columns: var(--gutter) minmax(0, 1fr);
+  }
+
+  .note-actions {
+    position: static;
+    grid-column: 2;
+    margin: 2px 0 0 -6px;
+    opacity: 1;
+  }
+}
+
+.note-actions button {
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: var(--faint);
+  font-size: 12.5px;
+}
+
+.note-actions button:hover {
+  color: var(--ink);
+  background: var(--cursor);
+}
+
+/* The composer, hanging where its comment will land: the thread from the selected lines
+   curls into the top rule, which carries the target; the bottom rule carries the keys. */
+.composer {
+  position: relative;
+  display: grid;
+  grid-template-columns: var(--gutter) minmax(0, 1fr);
+  padding-top: 12px;
+  margin-bottom: 20px;
+  font-family: var(--sans);
+}
+
+.composer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: var(--rail);
+  width: calc(var(--gutter) - var(--rail));
+  height: 14px;
+  border-left: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  border-bottom-left-radius: 8px;
+  animation: draw-thread 140ms ease-out both;
+}
+
+.composer-card {
+  grid-column: 2;
+  position: relative;
+  padding: 16px 0 14px;
+  border-bottom: 1px solid var(--accent);
+}
+
+.composer-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  background: var(--accent);
+  transform-origin: left;
+  animation: draw-rule 200ms ease-out 100ms both;
+}
+
+@keyframes draw-thread {
+  from {
+    clip-path: inset(0 100% 100% 0);
+  }
+}
+
+@keyframes draw-rule {
+  from {
+    transform: scaleX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composer::before,
+  .composer-card::before {
+    animation: none;
+  }
+}
+
+.composer-title {
+  position: absolute;
+  top: -0.8em;
+  left: 12px;
+  padding: 0 8px;
+  background: var(--page);
+  color: var(--accent);
+  font: 700 12.5px/1.6 var(--mono);
+}
+
+.composer blockquote {
+  margin: 0 0 10px 3ch;
+  padding-left: 1.5ch;
+  border-left: 2px solid var(--rule);
+  color: var(--muted);
+  font: 13px/1.6 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 6lh;
+  overflow: auto;
+}
+
+.prompt {
+  display: grid;
+  grid-template-columns: 3ch minmax(0, 1fr);
+  align-items: start;
+}
+
+.prompt > span {
+  color: var(--accent);
+  font: 700 16px/1.55 var(--mono);
+  text-align: center;
 }
 
 textarea {
-  display: block;
   width: 100%;
-  margin: 0.35rem 0 0.65rem;
-  resize: vertical;
-}
-
-blockquote {
-  max-height: 9rem;
-  margin: 0.7rem 0;
-  padding: 0.4rem 0.6rem;
-  overflow: auto;
-  border-left: 3px solid #bccbd7;
-  background: #f4f7fa;
-  font: 0.85rem var(--mono);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-aside {
-  max-height: 85vh;
-  padding: 1rem;
-  overflow: auto;
-}
-
-.comment {
-  margin-bottom: 1rem;
-  padding-bottom: 1rem;
-  border-bottom: 1px solid #dce4eb;
-}
-
-.comment p {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.comment-target {
+  min-height: 1lh;
+  max-height: 40vh;
   padding: 0;
   border: 0;
+  outline: none;
+  resize: none;
+  field-sizing: content;
   background: transparent;
-  color: #245a80;
-  font-size: 0.85rem;
-  text-align: left;
+  color: var(--ink);
+  font: 15px/1.55 var(--sans);
+}
+
+/* The composer's accent rule already marks where typing goes. */
+textarea:focus-visible {
+  outline: none;
+}
+
+textarea::placeholder {
+  color: var(--faint);
+}
+
+.composer-actions {
+  position: absolute;
+  right: 12px;
+  bottom: -0.8em;
+  display: flex;
+  gap: 4px;
+  padding: 0 4px;
+  background: var(--page);
+  font: 12.5px/1.6 var(--sans);
+  white-space: nowrap;
+}
+
+.composer-actions button {
+  padding: 0 6px;
+  border-radius: 4px;
+  color: var(--muted);
+}
+
+.composer-actions button:not(:disabled):hover {
+  color: var(--accent);
+}
+
+.composer-actions button:last-child:not(:disabled) {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Touch has no keys to show, and needs room to tap: the actions sit beneath the rule. */
+@media (pointer: coarse) {
+  .composer-card {
+    margin-bottom: 52px;
+  }
+
+  .composer-actions {
+    bottom: -48px;
+    right: 0;
+    gap: 8px;
+  }
+
+  .composer-actions button {
+    min-height: 44px;
+    padding: 0 16px;
+    font-size: 15px;
+  }
+
+  .save {
+    min-height: 44px;
+    padding: 0 12px;
+  }
+
+  .save kbd {
+    display: none;
+  }
+}
+
+/* The overview of comments, at the right edge. */
+.rail {
+  position: fixed;
+  top: 64px;
+  bottom: 64px;
+  right: 14px;
+  width: 10px;
+  pointer-events: none;
+}
+
+.tick {
+  position: absolute;
+  right: 0;
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--note);
+  opacity: 0.8;
+  pointer-events: auto;
+}
+
+/* The preview, as prose. */
+.preview {
+  max-width: 70ch;
+  margin: 0 auto;
+  padding: 32px 24px 112px;
+  font: 16px/1.7 var(--sans);
   overflow-wrap: anywhere;
 }
 
-.hint,
-.loading {
-  padding: 0.3rem 0.8rem;
-  color: var(--muted);
-  font-size: 0.9rem;
+.preview-note {
+  margin: 0 0 28px;
+  color: var(--faint);
+  font-size: 13px;
 }
 
-@media (max-width: 800px) {
-  header {
-    padding: 0.75rem;
+.preview h1,
+.preview h2,
+.preview h3 {
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.preview h1 {
+  font-size: 1.9em;
+  font-weight: 600;
+}
+
+.preview h2 {
+  margin-top: 2em;
+  font-size: 1.35em;
+  font-weight: 600;
+}
+
+.preview code {
+  color: var(--code);
+  font-size: 0.88em;
+}
+
+.preview pre {
+  padding: 14px 16px;
+  overflow-x: auto;
+  border-left: 2px solid var(--rule);
+  background: var(--surface);
+}
+
+.preview blockquote {
+  margin-left: 0;
+  padding-left: 18px;
+  border-left: 2px solid var(--rule);
+  color: var(--muted);
+}
+
+/* The card above the key line, all comments or the keys, titled in its top rule. */
+.card {
+  padding-top: 14px;
+  background: var(--page);
+}
+
+.card-inner {
+  max-width: var(--column);
+  margin: 0 auto;
+  padding: 0 28px 0 16px;
+  font: 14px/1.6 var(--mono);
+}
+
+.card-frame {
+  position: relative;
+  border-top: 2px solid var(--accent);
+}
+
+.card-body {
+  max-height: 42vh;
+  overflow: auto;
+  padding: 18px 0 16px;
+}
+
+.card-title {
+  position: absolute;
+  top: -0.85em;
+  left: 12px;
+  margin: 0;
+  padding: 0 8px;
+  background: var(--page);
+  color: var(--accent);
+  font: 700 13px/1.6 var(--sans);
+}
+
+.card-file {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font: 500 12.5px var(--mono);
+}
+
+.card-file ~ .card-file {
+  margin-top: 12px;
+}
+
+.listed {
+  display: grid;
+  grid-template-columns: 11ch minmax(0, 1fr);
+  gap: 0 1.5ch;
+  width: 100%;
+  padding: 3px 8px;
+  border-radius: 5px;
+  text-align: left;
+}
+
+.listed:hover,
+.listed.chosen {
+  background: var(--wash);
+}
+
+.place {
+  color: var(--faint);
+  font: 12.5px/1.75 var(--sans);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.listed.chosen .place {
+  color: var(--accent);
+}
+
+.excerpt,
+.target {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.excerpt {
+  color: var(--ink);
+  font: 14px/1.6 var(--sans);
+}
+
+/* The line a listed comment targets, so the list reads without jumping. */
+.target {
+  grid-column: 2;
+  color: var(--code);
+  font: 12.5px/1.5 var(--mono);
+}
+
+.empty,
+.pointer {
+  color: var(--muted);
+  font: 13.5px/1.6 var(--sans);
+}
+
+.keys {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, max-content));
+  gap: 10px 48px;
+}
+
+.keys h3 {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font: 500 12.5px var(--sans);
+}
+
+.keys dl {
+  display: grid;
+  grid-template-columns: max-content max-content;
+  gap: 0 2ch;
+  margin: 0;
+}
+
+.keys dl div {
+  display: contents;
+}
+
+.keys dd {
+  margin: 0;
+  color: var(--muted);
+  font: 13.5px/1.75 var(--sans);
+}
+
+.keys kbd {
+  font-size: 12.5px;
+  line-height: 1.9;
+}
+
+.pointer {
+  margin: 14px 0 0;
+}
+
+.output {
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--muted);
+  font: 13.5px/1.6 var(--sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The key line: what to press now, or what just happened, and the review's state. */
+footer {
+  border-top: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+footer .bar {
+  align-items: center;
+  gap: 20px;
+  height: 34px;
+}
+
+footer p {
+  margin: 0;
+}
+
+.notice:empty {
+  display: none;
+}
+
+.notice {
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+}
+
+.notice::before {
+  content: '› ';
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.notice.error {
+  color: var(--delete);
+}
+
+.notice.error::before {
+  content: '! ';
+}
+
+.hints {
+  display: flex;
+  gap: 18px;
+  overflow: hidden;
+}
+
+.hints kbd {
+  margin-right: 0.6ch;
+}
+
+.state {
+  display: flex;
+  gap: 16px;
+  margin-left: auto;
+}
+
+.state .count {
+  margin: 0;
+  color: var(--muted);
+}
+
+.state .count:hover {
+  color: var(--ink);
+}
+
+/* Saving is a quiet action beside the state it changes: blue while there is something to save. */
+.save {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.save kbd {
+  margin-left: 0.6ch;
+  color: inherit;
+  opacity: 0.75;
+}
+
+.save.dirty {
+  color: var(--accent);
+}
+
+.save:not(:disabled):hover {
+  color: var(--ink);
+}
+
+.unsaved .dot {
+  color: var(--accent);
+}
+
+@media (max-width: 720px) {
+  /* Files on one row; the view on the next. */
+  header .bar {
+    flex-wrap: wrap;
+    gap: 0 12px;
+    height: auto;
+    padding: 0 10px;
   }
 
-  nav {
-    margin: 0.75rem;
+  .tabs {
+    flex-basis: 100%;
+    height: 40px;
+    border-bottom: 1px solid var(--rule);
   }
 
-  nav select {
-    max-width: 75vw;
+  .tab[aria-current='page']::after {
+    bottom: -1px;
   }
 
-  main {
-    grid-template-columns: 1fr;
-    padding: 0 0.75rem 0.75rem;
+  .views {
+    flex: 1;
+    min-width: 0;
+    height: 40px;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
 
-  aside {
-    max-height: none;
+  .brand,
+  .hints,
+  .rail {
+    display: none;
+  }
+
+  .doc {
+    padding: 16px 12px 96px 4px;
+    font-size: 13px;
+  }
+
+  .note {
+    grid-template-columns: var(--gutter) minmax(0, 1fr);
+  }
+
+  .card-inner {
+    padding: 0 12px 0 4px;
+  }
+
+  footer .bar {
+    padding: 0 10px;
   }
 }

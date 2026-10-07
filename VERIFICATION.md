@@ -2,7 +2,7 @@
 
 Verified on 2026-10-06 on branch `rewrite/clean-room`, based on `ddc5a58`. The branch is a from-scratch rewrite of the Rust core, both interfaces, and the Rust tests. The feedback format is unchanged: `examples/feedback.json` and feedback saved by the previous implementation reopen without conversion.
 
-The black-box acceptance suites, `tests/tui_smoke.py` and `frontend/tests/browser.mjs`, were kept from `ddc5a58` and pass against the rewrite. They drive the executable through a real PTY and through Chromium over loopback HTTP. The only change to them is one added browser scenario, described below.
+The black-box acceptance suites, `tests/tui_smoke.py` and `frontend/tests/browser.mjs`, were kept from `ddc5a58` and pass against the rewrite. They drive the executable through a real PTY and through Chromium over loopback HTTP. The only change to them is one added browser scenario, described below. The later interface redesign (2026-10-07) moved the browser suite to the new controls and added keyboard, comment-list, and embedded-font checks; the scenarios above stay covered.
 
 An independent review with Codex (GPT 6.1 Sol, xhigh effort) compared the rewrite with `ddc5a58`. It reported four defects in the rewrite, all fixed with regression tests that fail before and pass after the fix: a revision root replaced by a symlink could expose outside files; a rejected mixed-side browser drag kept an earlier partial target; a failed save from the TUI quit prompt closed the prompt; and a failed save changed `saved_at`. Its fifth finding is the deliberate change that a newly opened review without comments no longer counts as unsaved.
 

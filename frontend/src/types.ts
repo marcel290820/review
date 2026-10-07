@@ -6,9 +6,12 @@ export type Snapshot = { id: string; side: Side; revision: string; sha256: strin
 
 export type DiffRow = {
   kind: 'hunk' | 'context' | 'delete' | 'add' | 'note';
+  /** The line, the lines a hunk covers, or a note. */
   text: string;
   old_line: number | null;
   new_line: number | null;
+  /** UTF-8 byte ranges of `text` that differ from the paired line on the other side. */
+  changes?: { start: number; end: number }[];
 };
 
 /** `diff` is set for Git changes and null for opened files. */
@@ -37,8 +40,11 @@ export type DiskState = {
   diff: DiffRow[];
 };
 
+/** A Markdown snapshot's read-only preview, and `start, end, flags` byte triples for each source line. */
+export type MarkdownView = { snapshot_id: string; html: string; marks: number[][] };
+
 /** Reviewed content, fixed for the session. */
-export type Content = { files: ReviewFile[]; previews: { snapshot_id: string; html: string }[] };
+export type Content = { files: ReviewFile[]; markdown: MarkdownView[] };
 
 /** Mutable review state, returned by every other API call. */
 export type ReviewState = {
@@ -48,6 +54,3 @@ export type ReviewState = {
   output: string;
   last_saved: string | null;
 };
-
-/** How the content pane presents the current file. */
-export type Mode = 'source' | 'diff' | 'preview' | 'revisions';

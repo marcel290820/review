@@ -68,9 +68,13 @@ The TUI keeps your terminal's font and background. At startup it asks the termin
 
 ### Browser controls
 
-Select source text with the pointer, click a line number, Shift-click another line to extend a range, or enter a start and end line. Write a comment and choose **Add comment**, then **Save feedback**. Click a comment's target to revisit it; Edit and Delete manage comments. `[`/`]` switch files, and Ctrl+S records a focused comment or saves feedback outside the editor.
+Click a line number, Shift-click another to extend the range, or drag across text for an exact passage, then press `c` or the **Comment** button. The composer opens where the comment will land; Ctrl+Enter or Ctrl+S records it and Esc cancels. Comments hang beneath their lines, with Edit and Delete beside them. **Save feedback**, `s`, or Ctrl+S outside the composer saves.
 
-Markdown preview is read-only. Use Source for precise targeting. In a unified diff, old and new line-number buttons choose their respective snapshots; a selector chooses the target side of context text. Selections spanning both sides are rejected. Full source views support ranges that cross separate hunks.
+The keys follow the TUI: `j`/`k` move, `v` selects lines, `c` comments, `a` lists all comments (`j`/`k`, Enter, `e`, and `d` act on the list), `[`/`]` switch files, `b` cycles views, `o`/`n` choose the side for diff context lines, `r` shows changes on disk, and `?` shows every key and the save destination. Tab keeps moving focus, so the list uses `a`.
+
+The Markdown preview is read-only; comments target the source, which styles Markdown lightly. In a unified diff, old and new line numbers choose their snapshots, and dragged context text targets the side `o`/`n` chose, new by default. Selections spanning both sides are rejected. The old and new source views support ranges that cross separate hunks.
+
+The interface follows the system's light or dark setting and embeds its fonts, JetBrains Mono and IBM Plex Sans (SIL Open Font License). Large files stay responsive: rows render in chunks that the browser skips while they are off screen, and files over 4,000 lines render each chunk as it nears the view, so the browser's find covers only what has rendered.
 
 Several tabs share one review session; when two tabs edit the same comment, the last recorded edit wins. The browser warns before leaving with unsaved feedback or a draft. The first Ctrl+C in the server also preserves recorded unsaved feedback; save in the browser and stop again. A second Ctrl+C within three seconds explicitly discards it. Abrupt termination cannot preserve in-memory feedback or unrecorded drafts.
 
@@ -103,7 +107,7 @@ See [examples/feedback.json](examples/feedback.json) for a complete readable exa
 
 The server binds to `127.0.0.1` only. A random session token is carried in the URL fragment and kept in that tab's session storage. APIs require that token, the expected Host, and an allowed Origin. Cross-site requests are rejected. Responses disable caching and carry a restrictive content security policy. Keep the printed session URL private to your review.
 
-The API exposes selected snapshots, comments, revision inspection, and the CLI-configured save destination. It has no arbitrary path-reading or path-writing endpoint. Imported feedback cannot authorize disk access. Revision reads reject traversal and symlinks below the explicitly selected root. Markdown HTML is escaped; link and image markup becomes text, so documents cannot execute scripts or request external resources. Browser assets are embedded with `include_str!` and need no runtime downloads.
+The API exposes selected snapshots, comments, revision inspection, and the CLI-configured save destination. It has no arbitrary path-reading or path-writing endpoint. Imported feedback cannot authorize disk access. Revision reads reject traversal and symlinks below the explicitly selected root. Markdown HTML is escaped; link and image markup becomes text, so documents cannot execute scripts or request external resources. Browser assets, including fonts, are embedded in the executable and need no runtime downloads.
 
 ## Development and verification
 
@@ -114,11 +118,13 @@ The code is organized as one library with two interfaces:
 | `src/feedback.rs` | The saved format, coordinate convention, target construction, and validation |
 | `src/session.rs` | One review in memory: comment changes, unsaved state, saving, disk revisions |
 | `src/files.rs` | Bounded text reads, symlink-free reads below a root, saves that never replace files |
-| `src/diff.rs` | Unified diff rows numbered like comment targets |
+| `src/diff.rs` | Unified diff rows numbered like comment targets, with changed words and hunk labels |
+| `src/markdown.rs` | Markdown styling marks for source lines and inert preview HTML, for both interfaces |
 | `src/git.rs` | Review content from read-only Git commands |
-| `src/tui/` | Terminal interface: state and keys (`app.rs`), drawing (`view.rs`), colors (`theme.rs`), Markdown styling, comment editor |
-| `src/http.rs` | Loopback HTTP adapter and inert Markdown rendering |
-| `frontend/src/` | Svelte browser interface; `lines.ts` mirrors the byte and line math |
+| `src/tui/` | Terminal interface: state and keys (`app.rs`), drawing (`view.rs`), colors (`theme.rs`), text measuring (`text.rs`), comment editor |
+| `src/http.rs` | Loopback HTTP adapter and embedded assets |
+| `frontend/src/` | Svelte browser interface: state and actions (`review.svelte.ts`), view rows (`rows.ts`), byte and line math mirroring the core (`lines.ts`), and components |
+| `frontend/public/fonts/` | The embedded fonts and their licenses |
 
 The checked-in `frontend/dist` bundle lets a Rust-only build work. When changing the frontend, use Node (verified with 24.21.0) and regenerate it before building Rust; CI fails when the committed bundle differs from a fresh build.
 

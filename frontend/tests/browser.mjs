@@ -41,7 +41,7 @@ async function open(s) {
   page.on('dialog', dialog => dialog.accept());
   await page.goto(s.url);
   await expect(page.getByRole('button', { name: 'Save feedback', exact: true })).toBeVisible();
-  await expect(page.getByLabel('File', { exact: true })).toBeVisible();
+  await expect(page.getByRole('navigation', { name: 'Files' })).toBeVisible();
   return { context, page, external, errors };
 }
 async function save(page, s) {
@@ -51,11 +51,14 @@ async function save(page, s) {
   assert.equal(state.dirty, false);
   return { path: state.last_saved, feedback: JSON.parse(readFileSync(state.last_saved, 'utf8')) };
 }
+/** Opens the composer on the chosen lines or passage, then records `text`. */
 async function comment(page, text) {
+  await page.keyboard.press('c');
   await page.getByLabel('Comment', { exact: true }).fill(text);
   await page.getByRole('button', { name: 'Add comment', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('Comment recorded');
 }
+const tab = (page, name) => page.getByRole('navigation', { name: 'Files' }).getByRole('button', { name: new RegExp(`^${name}`) });
 
 try {
   browser = await chromium.launch({ headless: true });
@@ -68,16 +71,22 @@ try {
   assert.equal((await fetch(`${s.base}/api/state`)).status, 401);
   assert.equal((await fetch(`${s.base}/api/state`, { headers: { Authorization: `Bearer ${s.token}`, Origin: 'https://unrelated.invalid' } })).status, 403);
   assert.equal((await fetch(`${s.base}/VISION.md`)).status, 404);
+  assert.equal((await fetch(`${s.base}/fonts/mono.woff2`)).headers.get('content-type'), 'font/woff2');
+  assert.equal((await fetch(`${s.base}/fonts/other.woff2`)).status, 404);
 
   // A real mouse drag uses browser UTF-16 carets; saved targets use UTF-8 bytes.
-  const box = await page.locator('#line-3 [data-start]').evaluate(span => {
-    const range = document.createRange(); range.setStart(span.firstChild, 0); range.setEnd(span.firstChild, 7);
+  const box = await page.locator('#r2 [data-start]').evaluate(span => {
+    const text = [...span.childNodes].find(node => node.nodeType === Node.TEXT_NODE && node.length > 0);
+    const range = document.createRange(); range.setStart(text, 0); range.setEnd(text, 7);
     const r = range.getBoundingClientRect(); return { x: r.x, y: r.y + r.height / 2, right: r.right };
   });
   await page.mouse.move(box.x + 0.2, box.y); await page.mouse.down();
   await page.mouse.move(box.right - 0.2, box.y, { steps: 15 }); await page.mouse.up();
+  await page.keyboard.press('c');
   await expect(page.getByLabel('Selected quote')).toHaveText('Café 🦀');
-  await comment(page, 'Explain the original wording\nKeep the accent and emoji.');
+  await page.getByLabel('Comment', { exact: true }).fill('Explain the original wording\nKeep the accent and emoji.');
+  await page.getByRole('button', { name: 'Add comment', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Comment recorded');
   let state = await s.state();
   assert.equal(state.comments[0].target.quote, 'Café 🦀');
   assert.equal(state.comments[0].target.start_byte, Buffer.byteLength('# Plan\n\n'));
@@ -88,14 +97,46 @@ try {
   await page.getByLabel('Edit comment').fill('Updated request from browser');
   await page.getByRole('button', { name: 'Update comment' }).click();
   await expect(page.getByRole('status')).toContainText('Comment recorded');
+  // Edits within one second, which share a timestamp, still show the latest text.
+  for (const body of ['Same second A', 'Same second B']) {
+    await page.getByRole('button', { name: 'Edit', exact: true }).first().click();
+    await page.getByLabel('Edit comment').fill(body);
+    await page.getByRole('button', { name: 'Update comment' }).click();
+    await expect(page.locator('.composer')).toHaveCount(0);
+  }
+  await expect(page.locator('.note').first()).toContainText('Same second B');
   await page.getByRole('button', { name: 'Select line 3', exact: true }).click();
   await page.getByRole('button', { name: 'Select line 4', exact: true }).click({ modifiers: ['Shift'] });
-  await expect(page.getByLabel('Selected quote')).toHaveText('Café 🦀 is old.\nNext step.');
+  await expect(page.locator('.row.sel')).toHaveCount(2);
   await comment(page, 'Temporary range comment');
+  state = await s.state();
+  assert.equal(state.comments[1].target.quote, 'Café 🦀 is old.\nNext step.\n');
   await page.getByRole('button', { name: 'Delete', exact: true }).last().click();
-  await expect(page.locator('.comment')).toHaveCount(1);
+  await expect(page.locator('.note')).toHaveCount(1);
 
-  await page.getByLabel('File', { exact: true }).selectOption('1');
+  // Keys alone: move, select two lines, comment, and find it in the list.
+  await page.keyboard.press('g'); await page.keyboard.press('j'); await page.keyboard.press('j');
+  await page.keyboard.press('v'); await page.keyboard.press('j');
+  await page.keyboard.press('c');
+  await expect(page.locator('.composer-title')).toHaveText('plan.md:3–4');
+  await page.keyboard.type('Keyboard range');
+  await page.keyboard.press('Control+Enter');
+  await expect(page.getByRole('status')).toContainText('Comment recorded');
+  await page.keyboard.press('a');
+  await expect(page.locator('.listed')).toHaveCount(2);
+  await page.keyboard.press('j'); await page.keyboard.press('d');
+  await expect(page.locator('.listed')).toHaveCount(1);
+  await page.keyboard.press('a');
+  // Going to a comment drops a key selection in progress.
+  await page.keyboard.press('g'); await page.keyboard.press('v'); await page.keyboard.press('j');
+  await page.keyboard.press('a'); await page.keyboard.press('Enter');
+  await page.keyboard.press('c');
+  await expect(page.locator('.composer-title')).toHaveText('plan.md:3');
+  await page.keyboard.press('Escape');
+
+  await page.locator('main').evaluate(main => main.scrollTo(0, 200));
+  await tab(page, 'other.txt').click();
+  assert.equal(await page.locator('main').evaluate(main => main.scrollTop), 0, 'Another file starts at its top');
   await page.getByRole('button', { name: 'Select line 2', exact: true }).click();
   await comment(page, 'Second file request');
   let saved = await save(page, s);
@@ -104,13 +145,13 @@ try {
   const firstSavedBytes = readFileSync(saved.path, 'utf8');
   await save(page, s); assert.equal(readFileSync(saved.path, 'utf8'), firstSavedBytes);
 
-  await page.getByLabel('File', { exact: true }).selectOption('0');
-  await page.getByRole('button', { name: 'Markdown preview' }).click();
-  await expect(page.locator('.markdown h1')).toHaveText('Plan');
+  await tab(page, 'plan.md').click();
+  await page.getByRole('button', { name: 'preview', exact: true }).click();
+  await expect(page.locator('.preview h1')).toHaveText('Plan');
   assert.equal(await page.evaluate(() => window.reviewExecuted), undefined);
-  assert.equal(await page.locator('.markdown script, .markdown img, .markdown iframe, .markdown a').count(), 0);
+  assert.equal(await page.locator('.preview script, .preview img, .preview iframe, .preview a').count(), 0);
   assert.deepEqual(external, []);
-  await page.getByRole('button', { name: 'Source', exact: true }).click();
+  await page.getByRole('button', { name: 'source', exact: true }).click();
 
   // Tabs share one session; the last recorded edit wins.
   await page.getByRole('button', { name: 'Edit', exact: true }).first().click();
@@ -129,15 +170,18 @@ try {
   const bridge = JSON.parse(execFileSync('python3', [join(project, 'tests/tui_smoke.py'), '--bin', binary, '--bridge', saved.path, join(root, 'tui.json'), root], { encoding: 'utf8', timeout: 30000 }));
   const re = await server(['--reopen', bridge.saved, '--root', root, '--output', 'reopened.json']);
   const opened = await open(re); const p = opened.page;
-  await expect(p.locator('.revision-status')).toContainText('changed');
-  await expect(p.locator('.comment')).toHaveCount(3);
-  await expect(p.locator('.comment').first()).toContainText('edited in TUI');
-  await p.getByRole('button', { name: 'Inspect revisions' }).click();
-  await expect(p.locator('.content')).toContainText('Inserted line');
-  await expect(p.getByLabel('Comment', { exact: true })).toBeDisabled();
-  await p.locator('.comment-target').first().click();
-  await expect(p.getByLabel('Selected quote')).toHaveText('Café 🦀');
-  await expect(p.locator('.content')).toContainText('Café 🦀 is old.');
+  await p.keyboard.press('a');
+  await expect(p.locator('.listed')).toHaveCount(3);
+  await expect(p.locator('.listed', { hasText: 'edited in TUI' })).toHaveCount(1);
+  await p.keyboard.press('a');
+  await p.getByRole('button', { name: 'changed on disk' }).click();
+  await expect(p.locator('main')).toContainText('Inserted line');
+  await p.keyboard.press('c');
+  await expect(p.locator('.composer')).toHaveCount(0);
+  await p.getByRole('button', { name: 'Back to review' }).click();
+  await p.keyboard.press('a');
+  await p.locator('.listed', { hasText: 'edited in TUI' }).click();
+  await expect(p.locator('#r2.sel')).toContainText('Café 🦀 is old.');
   const transferred = await re.state(); assert.deepEqual(transferred.comments[0].target, originalTarget);
   assert.equal(transferred.comments.length, 3);
   await save(p, re);
@@ -164,30 +208,117 @@ try {
   const repo = join(root, 'git'); mkdirSync(repo);
   const git = args => execFileSync('git', ['-C', repo, ...args], { stdio: 'pipe' });
   git(['init', '-q']); git(['config', 'user.name', 'Local test']); git(['config', 'user.email', 'test@example.invalid']);
-  writeFileSync(join(repo, 'note.txt'), 'context\nold 🦀\nlast'); git(['add', '.']); git(['commit', '-qm', 'fixture']);
-  writeFileSync(join(repo, 'note.txt'), 'context\nnew 🦀\nlast');
+  const long = Array.from({ length: 30 }, (_, i) => `line ${i + 1}\n`).join('');
+  writeFileSync(join(repo, 'note.txt'), 'context\nold 🦀\nlast'); writeFileSync(join(repo, 'shift.txt'), 'a\nkeep me\n');
+  writeFileSync(join(repo, 'long.txt'), long);
+  git(['add', '.']); git(['commit', '-qm', 'fixture']);
+  writeFileSync(join(repo, 'note.txt'), 'context\nnew 🦀\nlast'); writeFileSync(join(repo, 'shift.txt'), 'inserted\na\nkeep me\n');
+  writeFileSync(join(repo, 'long.txt'), long.replace('line 30', 'line thirty'));
   const dif = await server(['--diff', '--output', 'diff.json'], repo); const diffUI = await open(dif);
+  await tab(diffUI.page, 'note.txt').click();
   await diffUI.page.getByRole('button', { name: 'Select old line 2', exact: true }).click();
   await comment(diffUI.page, 'Old side concern');
+  // While a comment is being recorded, its text cannot change and get lost, and other
+  // changes wait for it.
+  await diffUI.page.route('**/api/comments', async route => { await new Promise(r => setTimeout(r, 800)); await route.continue(); });
   await diffUI.page.getByRole('button', { name: 'Select new line 2', exact: true }).click();
-  await comment(diffUI.page, 'New side concern');
+  await diffUI.page.keyboard.press('c');
+  await diffUI.page.getByLabel('Comment', { exact: true }).fill('New side concern');
+  await diffUI.page.getByRole('button', { name: 'Add comment', exact: true }).click();
+  await expect(diffUI.page.getByLabel('Comment', { exact: true })).toHaveAttribute('readonly', '');
+  await diffUI.page.locator('header .brand').click();
+  await diffUI.page.keyboard.press('a'); await diffUI.page.keyboard.press('d');
+  await expect(diffUI.page.getByRole('status')).toContainText('Wait for the current change');
+  await expect(diffUI.page.getByRole('status')).toContainText('Comment recorded');
+  assert.equal((await dif.state()).comments.length, 2);
+  await diffUI.page.keyboard.press('a');
+  await diffUI.page.unroute('**/api/comments');
   const diffSave = await save(diffUI.page, dif);
   assert.equal(diffSave.feedback.comments[0].target.side, 'old'); assert.equal(diffSave.feedback.comments[0].target.quote, 'old 🦀\n');
   assert.equal(diffSave.feedback.comments[1].target.side, 'new'); assert.equal(diffSave.feedback.comments[1].target.quote, 'new 🦀\n');
   // A drag from the old side into the new side is rejected and drops the earlier target.
-  const textEdge = (text, atEnd) => diffUI.page.locator('.content [data-snapshot]', { hasText: text }).evaluate((span, atEnd) => {
+  const textEdge = (text, atEnd) => diffUI.page.locator('.doc [data-snapshot]', { hasText: text }).evaluate((span, atEnd) => {
     const range = document.createRange(); range.selectNodeContents(span);
     const r = range.getBoundingClientRect(); return { x: atEnd ? r.right - 0.2 : r.x + 0.2, y: r.y + r.height / 2 };
   }, atEnd);
-  await expect(diffUI.page.getByLabel('Selected quote')).toHaveCount(1);
+  // A draft keeps its target while the composer is not focused.
+  await diffUI.page.getByRole('button', { name: 'Select new line 2', exact: true }).click();
+  await diffUI.page.keyboard.press('c');
+  await diffUI.page.getByLabel('Comment', { exact: true }).fill('pending');
+  await diffUI.page.locator('header .brand').click();
+  await diffUI.page.keyboard.press('o');
+  await expect(diffUI.page.getByRole('status')).toContainText('Record or cancel');
+  await expect(diffUI.page.getByLabel('Comment', { exact: true })).toHaveValue('pending');
+  await diffUI.page.keyboard.press('Escape');
+  await expect(diffUI.page.locator('.composer')).toHaveCount(0);
+  await diffUI.page.getByRole('button', { name: 'Select new line 2', exact: true }).click();
+  await expect(diffUI.page.locator('.row.sel')).toHaveCount(1);
   const from = await textEdge('old 🦀', false); const to = await textEdge('new 🦀', true);
   await diffUI.page.mouse.move(from.x, from.y); await diffUI.page.mouse.down();
   await diffUI.page.mouse.move(to.x, to.y, { steps: 15 }); await diffUI.page.mouse.up();
   await expect(diffUI.page.getByRole('status')).toContainText('Select one diff side');
-  await expect(diffUI.page.getByLabel('Selected quote')).toHaveCount(0);
+  await expect(diffUI.page.locator('.row.sel')).toHaveCount(0);
+  // The rejection also ends a key selection in progress.
+  await diffUI.page.keyboard.press('g'); await diffUI.page.keyboard.press('j');
+  await diffUI.page.keyboard.press('v'); await diffUI.page.keyboard.press('j');
+  await expect(diffUI.page.locator('.row.sel')).toHaveCount(2);
+  // A selection that spans both sides at once, as a triple-click or keys can make.
+  await diffUI.page.evaluate(() => {
+    const text = (content) => [...[...document.querySelectorAll('.doc [data-snapshot]')].find(s => s.textContent === content).childNodes]
+      .find(node => node.nodeType === Node.TEXT_NODE && node.length > 0);
+    getSelection().setBaseAndExtent(text('old 🦀'), 1, text('new 🦀'), 2);
+  });
+  await expect(diffUI.page.locator('.row.sel')).toHaveCount(0);
+  // A comment whose first line lies outside the diff opens in its side's full source.
+  const files = (await (await fetch(`${dif.base}/api/content`, { headers: { Authorization: `Bearer ${dif.token}` } })).json()).files;
+  const longFile = files.find(f => f.path === 'long.txt');
+  const longNew = longFile.snapshots.find(s => s.side === 'new');
+  await fetch(`${dif.base}/api/comments`, { method: 'POST', headers: { Authorization: `Bearer ${dif.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ file_id: longFile.id, snapshot_id: longNew.id, start_byte: long.indexOf('line 10\n'), end_byte: longNew.text.length, body: 'Long range' }) });
+  await expect(diffUI.page.locator('.state .count')).toContainText('3 comments', { timeout: 8000 });
+  await diffUI.page.keyboard.press('a');
+  await diffUI.page.locator('.listed', { hasText: 'Long range' }).click();
+  await expect(diffUI.page.locator('.row.sel')).toHaveCount(21);
+  await expect(diffUI.page.locator('.row.sel').first()).toContainText('line 10');
+  // An old-side passage on a context line, whose new-side line number differs, highlights cleanly.
+  const shifted = files.find(f => f.path === 'shift.txt');
+  const oldSide = shifted.snapshots.find(s => s.side === 'old');
+  await fetch(`${dif.base}/api/comments`, { method: 'POST', headers: { Authorization: `Bearer ${dif.token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ file_id: shifted.id, snapshot_id: oldSide.id, start_byte: 2, end_byte: 6, body: 'Old passage' }) });
+  await expect(diffUI.page.locator('.state .count')).toContainText('4 comments', { timeout: 8000 });
+  await diffUI.page.keyboard.press('a');
+  await diffUI.page.locator('.listed', { hasText: 'Old passage' }).click();
+  await expect(diffUI.page.locator('.row.sel')).toContainText('keep me');
+  await tab(diffUI.page, 'note.txt').click();
+  // Another tab deletes the comment being edited: the text stays and records as a new comment.
+  await diffUI.page.getByRole('button', { name: 'Edit', exact: true }).first().click();
+  await diffUI.page.getByLabel('Edit comment').fill('Kept after deletion');
+  const doomed = (await dif.state()).comments[0];
+  await fetch(`${dif.base}/api/comments/${doomed.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${dif.token}` } });
+  await expect(diffUI.page.getByRole('status')).toContainText('deleted elsewhere', { timeout: 8000 });
+  await expect(diffUI.page.getByLabel('Edit comment')).toHaveValue('Kept after deletion');
+  await diffUI.page.getByRole('button', { name: 'Add comment', exact: true }).click();
+  await expect(diffUI.page.getByRole('status')).toContainText('Comment recorded');
+  const kept = (await dif.state()).comments.find(c => c.body === 'Kept after deletion');
+  assert.deepEqual([kept.target.side, kept.target.start_byte, kept.target.end_byte], [doomed.target.side, doomed.target.start_byte, doomed.target.end_byte]);
+  // With focus on a listed comment, the list keys still choose, and e edits the chosen one.
+  await diffUI.page.keyboard.press('a');
+  await diffUI.page.locator('.listed').first().focus();
+  await diffUI.page.keyboard.press('j');
+  await expect(diffUI.page.locator('.listed').nth(1)).toHaveClass(/chosen/);
+  await expect(diffUI.page.locator('.listed').nth(1)).toBeFocused();
+  const editedBody = await diffUI.page.locator('.listed.chosen .excerpt').textContent();
+  await diffUI.page.keyboard.press('e');
+  await expect(diffUI.page.getByLabel('Edit comment')).toHaveValue(editedBody);
+  await diffUI.page.keyboard.press('Escape');
+  // Opened from the comment count, the list still answers its keys while that button has focus.
+  await diffUI.page.locator('.state .count').click();
+  await diffUI.page.keyboard.press('k');
+  const chosenLine = await diffUI.page.locator('.listed.chosen .target').textContent();
+  await diffUI.page.keyboard.press('Enter');
+  await expect(diffUI.page.locator('.card')).toHaveCount(0);
+  await expect(diffUI.page.locator('.row.sel').first()).toContainText(chosenLine);
   assert.deepEqual(errors, []); assert.deepEqual(diffUI.errors, []); assert.deepEqual(diffUI.external, []);
   await diffUI.context.close(); dif.stop();
-  console.log(JSON.stringify({ browser: 'passed', checks: ['actual mouse selection', 'Unicode byte targets', 'range selection', 'create/edit/delete', 'multi-file', 'save collisions', 'safe Markdown', 'session security', 'last edit wins across tabs', 'browser → TUI → browser', 'revision inspection', 'mobile layout', 'old/new Git targets', 'mixed-side drag rejection', 'bundled offline assets', 'failed save retention', 'server quit guard'] }));
+  console.log(JSON.stringify({ browser: 'passed', checks: ['actual mouse selection', 'Unicode byte targets', 'range selection', 'keyboard selection and list', 'create/edit/delete', 'multi-file', 'save collisions', 'safe Markdown', 'session security', 'last edit wins across tabs', 'browser → TUI → browser', 'revision inspection', 'mobile layout', 'old/new Git targets', 'mixed-side drag rejection', 'bundled offline assets and fonts', 'failed save retention', 'server quit guard'] }));
 } finally {
   for (const server of servers) if (server.exitCode === null) server.kill('SIGTERM');
   await browser?.close();

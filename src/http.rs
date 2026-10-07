@@ -30,8 +30,9 @@ const DISCARD_WINDOW: Duration = Duration::from_secs(3);
 const SECURITY_HEADERS: [(&str, &str); 5] = [
     (
         "content-security-policy",
-        "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; \
-         img-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+        "default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; \
+         connect-src 'self'; img-src 'none'; base-uri 'none'; form-action 'none'; \
+         frame-ancestors 'none'",
     ),
     ("referrer-policy", "no-referrer"),
     ("x-content-type-options", "nosniff"),
@@ -71,6 +72,7 @@ pub fn router(state: AppState) -> Router {
                 include_str!("../frontend/dist/app.css"),
             ),
         )
+        .route("/fonts/{name}", get(font))
         .route("/api/content", get(content))
         .route("/api/state", get(review_state))
         .route("/api/refresh", post(refresh))
@@ -135,6 +137,49 @@ fn is_dirty(session: &Mutex<Session>) -> bool {
 
 fn asset(content_type: &'static str, body: &'static str) -> MethodRouter<AppState> {
     get(move || async move { ([(CONTENT_TYPE, content_type)], body) })
+}
+
+/// The embedded fonts; see `frontend/public/fonts/README.md`.
+const FONTS: [(&str, &[u8]); 8] = [
+    (
+        "mono.woff2",
+        include_bytes!("../frontend/public/fonts/mono.woff2"),
+    ),
+    (
+        "mono-ext.woff2",
+        include_bytes!("../frontend/public/fonts/mono-ext.woff2"),
+    ),
+    (
+        "mono-italic.woff2",
+        include_bytes!("../frontend/public/fonts/mono-italic.woff2"),
+    ),
+    (
+        "mono-italic-ext.woff2",
+        include_bytes!("../frontend/public/fonts/mono-italic-ext.woff2"),
+    ),
+    (
+        "sans.woff2",
+        include_bytes!("../frontend/public/fonts/sans.woff2"),
+    ),
+    (
+        "sans-ext.woff2",
+        include_bytes!("../frontend/public/fonts/sans-ext.woff2"),
+    ),
+    (
+        "sans-italic.woff2",
+        include_bytes!("../frontend/public/fonts/sans-italic.woff2"),
+    ),
+    (
+        "sans-italic-ext.woff2",
+        include_bytes!("../frontend/public/fonts/sans-italic-ext.woff2"),
+    ),
+];
+
+async fn font(Path(name): Path<String>) -> Response {
+    match FONTS.iter().find(|(font, _)| *font == name) {
+        Some((_, bytes)) => ([(CONTENT_TYPE, "font/woff2")], *bytes).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 /// Admits only same-origin requests naming this loopback server, requires the session
@@ -211,7 +256,7 @@ fn apply(
 #[derive(Serialize)]
 struct Content<'a> {
     files: Vec<FileContent<'a>>,
-    previews: Vec<Preview>,
+    markdown: Vec<MarkdownView>,
 }
 
 #[derive(Serialize)]
@@ -221,10 +266,13 @@ struct FileContent<'a> {
     diff: Option<&'a [DiffRow]>,
 }
 
+/// A Markdown snapshot as a read-only preview, and the styling of its source lines.
 #[derive(Serialize)]
-struct Preview {
+struct MarkdownView {
     snapshot_id: String,
     html: String,
+    /// For each line, `start, end, flags` triples of byte ranges as in [`markdown::marks`].
+    marks: Vec<Vec<usize>>,
 }
 
 /// Mutable review state, returned by every other API call.
@@ -260,17 +308,25 @@ async fn content(State(state): State<AppState>) -> ApiResult {
             diff: session.diff(i),
         })
         .collect();
-    let previews = session
+    let markdown = session
         .files()
         .iter()
         .filter(|f| markdown::is_markdown(&f.path))
         .flat_map(|f| &f.snapshots)
-        .map(|s| Preview {
+        .map(|s| MarkdownView {
             snapshot_id: s.id.clone(),
             html: markdown::html(&s.text),
+            marks: markdown::marks(&s.text)
+                .into_iter()
+                .map(|line| {
+                    line.into_iter()
+                        .flat_map(|(r, f)| [r.start, r.end, f.into()])
+                        .collect()
+                })
+                .collect(),
         })
         .collect();
-    Ok(Json(Content { files, previews }).into_response())
+    Ok(Json(Content { files, markdown }).into_response())
 }
 
 async fn review_state(State(state): State<AppState>) -> ApiResult {
