@@ -2,8 +2,11 @@
 
 use serde::Serialize;
 use similar::{Algorithm, DiffTag, capture_diff_slices, group_diff_ops, udiff::UnifiedHunkHeader};
+use std::ops::Range;
 
 const CONTEXT_LINES: usize = 3;
+/// Most words in a pair of changed lines that get word-level changes.
+const MAX_WORDS: usize = 2000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -66,6 +69,71 @@ pub fn diff(old: &str, new: &str) -> Vec<DiffRow> {
     rows
 }
 
+/// Byte ranges of the words that differ between two versions of a line. Empty when the
+/// lines share too little for word changes to help.
+pub fn changed_words(old: &str, new: &str) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
+    let (old_words, new_words) = (words(old), words(new));
+    // Diffing words costs up to the square of their count; very long lines go unmarked.
+    if old_words.len() + new_words.len() > MAX_WORDS {
+        return (Vec::new(), Vec::new());
+    }
+    let a: Vec<&str> = old_words.iter().map(|word| &old[word.clone()]).collect();
+    let b: Vec<&str> = new_words.iter().map(|word| &new[word.clone()]).collect();
+    // The bytes spanned by a run of words.
+    let span = |words: &[Range<usize>], run: Range<usize>| {
+        (!run.is_empty()).then(|| words[run.start].start..words[run.end - 1].end)
+    };
+    let visible = |text: &str| text.chars().filter(|c| !c.is_whitespace()).count();
+    let (mut removed, mut added, mut same) = (Vec::new(), Vec::new(), 0);
+    for op in capture_diff_slices(Algorithm::Myers, &a, &b) {
+        let (tag, old_run, new_run) = op.as_tag_tuple();
+        if tag == DiffTag::Equal {
+            same += old_run.map(|i| visible(a[i])).sum::<usize>();
+        } else {
+            join(old, &mut removed, span(&old_words, old_run));
+            join(new, &mut added, span(&new_words, new_run));
+        }
+    }
+    // Below 40% shared text, highlighting words is noise.
+    if same * 5 < visible(old).max(visible(new)) * 2 {
+        return (Vec::new(), Vec::new());
+    }
+    (removed, added)
+}
+
+/// Adds `range` to `ranges`, merging it with the previous range across whitespace.
+fn join(line: &str, ranges: &mut Vec<Range<usize>>, range: Option<Range<usize>>) {
+    let Some(range) = range else { return };
+    match ranges.last_mut() {
+        Some(last) if line[last.end..range.start].trim().is_empty() => last.end = range.end,
+        _ => ranges.push(range),
+    }
+}
+
+/// Byte ranges of words, whitespace runs, and single other characters.
+fn words(line: &str) -> Vec<Range<usize>> {
+    let class = |c: char| {
+        if c.is_alphanumeric() || c == '_' {
+            0
+        } else if c.is_whitespace() {
+            1
+        } else {
+            2
+        }
+    };
+    let mut words: Vec<Range<usize>> = Vec::new();
+    let mut last = None;
+    for (i, c) in line.char_indices() {
+        let end = i + c.len_utf8();
+        match words.last_mut() {
+            Some(word) if class(c) != 2 && last == Some(class(c)) => word.end = end,
+            _ => words.push(i..end),
+        }
+        last = Some(class(c));
+    }
+    words
+}
+
 fn push_line(
     rows: &mut Vec<DiffRow>,
     kind: DiffKind,
@@ -121,6 +189,30 @@ mod tests {
             ]
         );
         assert_eq!(rows("", "x\n")[0].1, "@@ -0,0 +1 @@");
+    }
+
+    #[test]
+    fn changed_words_mark_only_what_differs() {
+        let (old, new) = changed_words("    let total = 0;", "    let total: u64 = 0;");
+        assert!(old.is_empty());
+        assert_eq!(
+            new.iter().map(|r| (r.start, r.end)).collect::<Vec<_>>(),
+            [(13, 18)]
+        );
+        assert_eq!(changed_words("same", "different"), (vec![], vec![]));
+        assert_eq!(changed_words("ü abcd", "ü wxyz"), (vec![], vec![]));
+        let (old, _) = changed_words(
+            "ship it on monday morning, as planned",
+            "ship it on friday evening, as planned",
+        );
+        assert_eq!(
+            old.iter().map(|r| (r.start, r.end)).collect::<Vec<_>>(),
+            [(11, 25)]
+        );
+        // Long lines stay cheap: one word is one token, and too many words go unmarked.
+        assert_eq!(words(&"x".repeat(100_000)).len(), 1);
+        let many = |word: &str| format!("{word} ").repeat(MAX_WORDS);
+        assert_eq!(changed_words(&many("a"), &many("b")), (vec![], vec![]));
     }
 
     #[test]
