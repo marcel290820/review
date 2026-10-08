@@ -7,12 +7,11 @@ use review::{
 use std::{fs, path::Path, process::Command};
 
 fn run(root: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .output()
-        .unwrap();
+    let mut command = Command::new("git");
+    for name in git::REPOSITORY_ENV {
+        command.env_remove(name);
+    }
+    let output = command.arg("-C").arg(root).args(args).output().unwrap();
     assert!(output.status.success(), "{args:?}: {output:?}");
 }
 

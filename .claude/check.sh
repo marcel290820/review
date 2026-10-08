@@ -9,6 +9,8 @@ cd "$(dirname "$0")/.."
 cargo fmt --all -- --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
+# Git hooks export GIT_DIR and GIT_INDEX_FILE; Git reads must ignore them.
+GIT_DIR=/nonexistent GIT_INDEX_FILE=/nonexistent cargo test --locked --test git
 cargo build --locked
 binary="${CARGO_TARGET_DIR:-$PWD/target}/debug/review"
 REVIEW_BIN="$binary" python3 tests/tui_smoke.py

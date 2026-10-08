@@ -186,11 +186,32 @@ impl Repo {
     }
 }
 
+/// Variables that point Git at another repository or index. Git sets them for hooks, so
+/// Review clears them to read the repository it was asked to read.
+pub const REPOSITORY_ENV: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_PREFIX",
+    "GIT_GRAFT_FILE",
+    "GIT_SHALLOW_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+];
+
 /// Runs Git in `directory` without pagers, external diff or text conversion drivers,
 /// file system monitors, or optional lock files, so it executes no repository-configured
 /// programs and leaves the repository unchanged.
 fn git(directory: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    for name in REPOSITORY_ENV {
+        command.env_remove(name);
+    }
+    let output = command
         .args([
             "--no-pager",
             "-c",
