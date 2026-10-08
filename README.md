@@ -68,3 +68,7 @@ When the agent is done, run `review --reopen review-feedback.json --root .` to c
 | [Security and limits](docs/security.md) | The loopback browser boundary, size limits, and what is out of scope |
 | [Development](docs/development.md) | Module layout, the check script, terminal and browser test suites |
 | [Vision](docs/vision.md), [rationale](docs/rationale.md), [architecture](docs/architecture.md) | Why Review exists and how it is built |
+
+## License
+
+[MIT](LICENSE)
