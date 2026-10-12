@@ -137,7 +137,7 @@ export function selectionPoint(node: Node, offset: number): { snapshot_id: strin
   let row = element?.closest<HTMLElement>('.row') ?? null;
   let atEnd = false;
   if (!row && element) {
-    const before = element.closest('.note, .composer') ?? (node === element ? node.childNodes[offset - 1] : null);
+    const before = element.closest('.comment, .composer') ?? (node === element ? node.childNodes[offset - 1] : null);
     row = rowBefore(before);
     atEnd = true;
   }

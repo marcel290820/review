@@ -107,8 +107,16 @@ pub async fn serve(session: Session, port: u16) -> Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(stop_requested(session.clone()))
         .await?;
+    // Like the terminal interface, end by naming the feedback to hand to an agent.
+    let saved = session
+        .lock()
+        .ok()
+        .and_then(|s| s.last_saved().map(|path| path.to_path_buf()));
     if is_dirty(&session) {
         eprintln!("Discarded unsaved feedback.");
+    }
+    if let Some(path) = saved {
+        println!("Feedback: {}", path.display());
     }
     Ok(())
 }

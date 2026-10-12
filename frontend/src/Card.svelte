@@ -2,12 +2,18 @@
   import { review } from './review.svelte';
   import type { Comment } from './types';
 
-  /** The key reference, one column per group. */
+  /** The document's gutter, so the list's lines and comments share its columns. */
+  let { digits, diff }: { digits: number; diff: boolean } = $props();
+
+  /** The key reference, one column per group, as in the terminal. */
   const KEYS: [string, [string, string][]][] = [
-    ['move', [['j k', 'line'], ['g G', 'top, bottom'], ['[ ]', 'previous, next file']]],
-    ['comment', [['v', 'select lines'], ['c', 'comment'], ['a', 'all comments'], ['e d', 'edit, delete in the list']]],
-    ['view', [['b', 'diff, old, new, preview'], ['o n', 'context lines on old, new'], ['r', 'changes on disk']]],
-    ['feedback', [['s', 'save'], ['ctrl+enter', 'record a comment'], ['?', 'close']]],
+    ['move', [['j k', 'line'], ['space', 'page'], ['g G', 'top, bottom']]],
+    [
+      'comment',
+      [['v', 'select lines'], ['c', 'comment'], ['esc', 'clear, cancel'], ['a', 'all comments'], ['enter', 'go to comment'], ['e d', 'edit, delete']],
+    ],
+    ['view', [['[ ]', 'previous, next file'], ['b', 'diff, old, new, preview'], ['o n', 'context on old, new'], ['r', 'changes on disk']]],
+    ['feedback', [['ctrl+enter', 'record comment'], ['s', 'save'], ['?', 'close']]],
   ];
 
   /** Comments under their files, in reading order. */
@@ -23,7 +29,7 @@
 
   const place = (c: Comment) => {
     const t = c.target;
-    const lines = t.start_line === t.end_line ? `${t.start_line}` : `${t.start_line}–${t.end_line}`;
+    const lines = t.start_line === t.end_line ? `${t.start_line}` : `${t.start_line}-${t.end_line}`;
     return t.side === 'source' ? lines : `${t.side} ${lines}`;
   };
 
@@ -41,11 +47,11 @@
 </script>
 
 {#if review.card === 'comments'}
-  <section class="card" aria-label="All comments">
+  <section class="card" class:diff aria-label="All comments" style:--digits={digits}>
     <div class="card-inner">
       <div class="card-frame">
         <h2 class="card-title">Comments</h2>
-        <div class="card-body" bind:this={list}>
+        <div class="card-body list" bind:this={list}>
         {#if groups.length === 0}
           <p class="empty">No comments yet. Click a line number or drag across text, then press <kbd>c</kbd>.</p>
         {/if}
@@ -63,8 +69,9 @@
               }}
             >
               <span class="place">{place(comment)}</span>
-              <span class="excerpt">{comment.body}</span>
+              <span class="thread" aria-hidden="true"></span>
               <span class="target">{comment.target.quote.split('\n', 1)[0] || '(empty file)'}</span>
+              <span class="excerpt">{comment.body}</span>
             </button>
           {/each}
         {/each}
@@ -73,7 +80,7 @@
     </div>
   </section>
 {:else if review.card === 'keys'}
-  <section class="card" aria-label="Keys">
+  <section class="card keys-card" aria-label="Keys">
     <div class="card-inner">
       <div class="card-frame">
         <h2 class="card-title">Keys</h2>

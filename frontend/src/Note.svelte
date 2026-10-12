@@ -7,10 +7,10 @@
   const chosen = $derived(review.card === 'comments' && review.inReadingOrder[review.listed]?.id === comment.id);
 </script>
 
-<div class="note" class:chosen>
+<div class="comment" class:chosen>
   <p>{comment.body}</p>
-  <span class="note-actions">
-    <button disabled={review.busy} onclick={() => review.goTo(comment, true)}>Edit</button>
-    <button disabled={review.busy} onclick={() => review.remove(comment)}>Delete</button>
+  <span class="comment-actions">
+    <button disabled={review.busy} aria-label="Edit this comment" onclick={() => review.goTo(comment, true)}>edit</button>
+    <button disabled={review.busy} aria-label="Delete this comment" onclick={() => review.remove(comment)}>delete</button>
   </span>
 </div>

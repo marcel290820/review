@@ -83,6 +83,26 @@ pub fn fit(text: &str, width: usize) -> String {
     fitted
 }
 
+/// `text` cut to `width` cells from its start, beginning with `…` when cut, so a path keeps
+/// its file name.
+pub fn fit_start(text: &str, width: usize) -> String {
+    if text_width(text) <= width {
+        return text.into();
+    }
+    let mut used = 1;
+    let kept: Vec<&str> = text
+        .graphemes(true)
+        .rev()
+        .take_while(|grapheme| {
+            used += grapheme_width(grapheme);
+            used <= width
+        })
+        .collect();
+    let mut fitted = String::from("…");
+    fitted.extend(kept.into_iter().rev());
+    fitted
+}
+
 pub fn pad(text: &str, width: usize) -> String {
     format!(
         "{text}{}",
@@ -140,5 +160,7 @@ mod tests {
         assert_eq!(fit("a longer line", 8), "a longe…");
         let family = format!("{FAMILY} ok");
         assert_eq!(fit(&family, 5), family);
+        assert_eq!(fit_start("src/deep/file.rs", 9), "…/file.rs");
+        assert_eq!(fit_start("short", 8), "short");
     }
 }

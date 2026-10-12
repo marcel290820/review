@@ -5,7 +5,7 @@ import { tick } from 'svelte';
 import { api, Responses } from './api';
 import { lineRange, lineSpan, utf8Length, utf8Slice } from './lines';
 import { buildRows, diskRows, linesOf, snapshotOf, viewsOf, type Row, type View } from './rows';
-import type { Comment, Content, ReviewFile, ReviewState, Snapshot } from './types';
+import type { Comment, Content, ReviewState, Snapshot } from './types';
 
 /** Rows per chunk. The browser skips the layout of chunks out of view. */
 export const CHUNK = 200;
@@ -45,6 +45,8 @@ export class Part {
   /** Where the whole selection begins and ends, when that is in this chunk. */
   first = $state(-1);
   last = $state(-1);
+  /** The selection is a passage dragged in the text, marked on its own rather than as lines. */
+  passage = $state(false);
   threads = $state.raw(new Map<number, Comment[]>());
   covered = $state.raw(new Set<number>());
   #covered = '';
@@ -65,8 +67,9 @@ export class Part {
   }
 
   /** Takes the part of the selection, cursor, button, and composer inside this chunk. */
-  mark(selected: [number, number] | null, cursor: number, pill: number, draft: number) {
+  mark(selected: [number, number] | null, passage: boolean, cursor: number, pill: number, draft: number) {
     const inside = selected !== null && selected[0] < this.end && selected[1] >= this.start;
+    this.passage = inside && passage;
     this.from = inside ? Math.max(selected[0] - this.start, 0) : -1;
     this.to = inside ? Math.min(selected[1] - this.start, this.rows.length - 1) : -1;
     this.first = this.local(selected?.[0]);
@@ -227,10 +230,20 @@ class Review {
     const request = this.#responses.next();
     try {
       const next = this.#responses.accept(request, await api.refresh());
-      if (next) this.state = next;
+      if (next) this.#apply(next);
     } catch (error) {
       this.say(error, true);
     }
+  }
+
+  /** Takes a newer state from the server. The comments list keeps its choice, set at this
+   * moment, or chooses the comment that took its place. Both change together, so nothing
+   * reacts to the interim. */
+  #apply(next: ReviewState) {
+    const chosen = this.inReadingOrder[this.listed]?.id;
+    this.state = next;
+    const kept = this.inReadingOrder.findIndex((c) => c.id === chosen);
+    this.listed = kept >= 0 ? kept : Math.max(0, Math.min(this.listed, this.comments.length - 1));
   }
 
   /** Applies a change on the server, one at a time. On failure, reloads the state and shows
@@ -244,7 +257,7 @@ class Review {
     const request = this.#responses.next();
     try {
       const next = this.#responses.accept(request, await action());
-      if (next) this.state = next;
+      if (next) this.#apply(next);
       return true;
     } catch (error) {
       await this.refresh();
@@ -257,7 +270,11 @@ class Review {
 
   /** True when no written draft would be lost, or the user agrees to discard it. */
   draftDiscarded(): boolean {
-    if (this.draft?.body.trim() && !confirm('Discard this comment draft?')) return false;
+    // Text the user wrote or changed, or an edit whose comment was deleted elsewhere: the
+    // draft is then its only copy.
+    const draft = this.draft;
+    const written = draft?.body.trim() && (draft.body !== (draft.editing?.body ?? '') || this.editingGone);
+    if (written && !confirm('Discard this comment draft?')) return false;
     this.draft = null;
     return true;
   }
@@ -289,7 +306,8 @@ class Review {
     const pill = this.draft || this.readOnly ? -1 : (this.choice?.rows[1] ?? -1);
     // An edited comment's composer replaces its thread, unless the comment is gone.
     const draft = this.draft?.editing && !this.editingGone ? -1 : (this.draftRow ?? -1);
-    for (const part of this.parts) part.mark(selected, cursor, pill, draft);
+    const passage = !this.listedRows && this.anchor === null && Boolean(this.choice?.passage);
+    for (const part of this.parts) part.mark(selected, passage, cursor, pill, draft);
   }
 
   /** Hands each chunk its comments. */
@@ -334,7 +352,7 @@ class Review {
     if (this.keepsDraft()) return;
     this.contextSide = side;
     this.choice = null;
-    this.say(`Context lines now target the ${side} side.`);
+    this.say(`Comments on context lines now go to the ${side} side.`);
   }
 
   /** True, with a notice, while a draft holds the current target. */
@@ -390,6 +408,8 @@ class Review {
 
   /** Opens the composer on the chosen target, the key selection, or the cursor's line. */
   compose() {
+    if (this.view === 'disk') this.say('Changes on disk are read-only. Press r to return to the review.', true);
+    else if (this.view === 'preview') this.say('The preview is read-only; comment in the source.', true);
     if (this.readOnly || this.draft) return;
     try {
       if (this.anchor !== null || !this.choice) this.chooseRows(...(this.selected ?? [this.cursor, this.cursor]));
@@ -419,14 +439,18 @@ class Review {
     const t = comment.target;
     const index = this.content.files.findIndex((f) => f.id === t.file_id);
     const file = this.content.files[index];
-    // The diff shows the comment when its first and last lines are in hunks; otherwise its
-    // side's full source does.
+    // The diff shows the comment when it shows every line of the range, each on a row that
+    // takes comments on the comment's side: context rows take the side o and n chose, and a
+    // replaced line puts the other side's row in between. Otherwise its side's full source does.
     const shows = (view: View) => {
-      const lines = new Set<number>();
-      for (const row of buildRows(file, view, this.contextSide, this.markdown)) {
-        for (const p of row.places) if (p?.side === t.side) lines.add(p.line);
-      }
-      return lines.has(t.start_line) && lines.has(t.end_line);
+      const rows = buildRows(file, view, this.contextSide, this.markdown);
+      const at = (line: number) => rows.findIndex((row) => row.places.some((p) => p?.side === t.side && p.line === line));
+      const [first, last] = [at(t.start_line), at(t.end_line)];
+      return (
+        first >= 0 &&
+        last - first === t.end_line - t.start_line &&
+        rows.slice(first, last + 1).every((row) => row.target?.snapshot.side === t.side)
+      );
     };
     const view: View = shows('main') ? 'main' : t.side === 'source' ? 'main' : t.side;
     if (index !== this.fileIndex || view !== this.view) this.showFile(index, view);
@@ -475,7 +499,6 @@ class Review {
     if (!confirm('Delete this comment?')) return;
     if (await this.change(() => api.deleteComment(comment.id))) {
       if (this.draft?.editing?.id === comment.id) this.draft = null;
-      this.listed = Math.min(this.listed, this.comments.length - 1);
       this.say('Comment deleted. Press s to save feedback.');
     }
   }
@@ -488,14 +511,26 @@ class Review {
     if (await this.change(api.save)) this.say(`Saved to ${this.state?.last_saved}`);
   }
 
-  toggleCard(card: Card) {
-    this.card = this.card === card ? null : card;
-    if (card === 'comments') this.listed = Math.max(0, Math.min(this.listed, this.comments.length - 1));
+  /** Copies the saved feedback's path, the file to hand to an agent. */
+  async copySaved() {
+    const path = this.state?.last_saved;
+    if (!path) return;
+    try {
+      await navigator.clipboard.writeText(path);
+      this.say(`Copied ${path}`);
+    } catch (error) {
+      this.say(error, true);
+    }
   }
 
-  /** The file a path shows, for labels. */
-  fileOf(id: string): ReviewFile | undefined {
-    return this.content?.files.find((f) => f.id === id);
+  toggleCard(card: Card) {
+    this.card = this.card === card ? null : card;
+    if (this.card !== 'comments') return;
+    // The list opens on this file's comments.
+    const comments = this.inReadingOrder;
+    const here = comments.findIndex((c) => c.target.file_id === this.file?.id);
+    if (here >= 0 && comments[this.listed]?.target.file_id !== this.file?.id) this.listed = here;
+    this.listed = Math.max(0, Math.min(this.listed, comments.length - 1));
   }
 }
 
@@ -503,7 +538,7 @@ export const review = new Review();
 
 /** `path:7-9`, with the diff side when there is one: the form editors and agents read. */
 export function location(path: string, side: string, first: number, last: number): string {
-  const lines = first === last ? `${first}` : `${first}–${last}`;
+  const lines = first === last ? `${first}` : `${first}-${last}`;
   return side === 'source' ? `${path}:${lines}` : `${path}:${lines} (${side})`;
 }
 

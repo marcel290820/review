@@ -20,7 +20,10 @@ async function send(method: string, path: string, payload?: unknown): Promise<st
     headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(payload);
   }
-  const response = await fetch(path, init);
+  // fetch rejects only when the server cannot be reached, such as after it was stopped.
+  const response = await fetch(path, init).catch(() => {
+    throw new Error('Cannot reach the review server. Is it still running?');
+  });
   const body = await response.text();
   if (!response.ok) throw new Error(errorMessage(body) || `${response.status} ${response.statusText}`);
   return body;

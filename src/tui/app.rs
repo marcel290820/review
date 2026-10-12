@@ -5,7 +5,7 @@ use crate::{
     diff::{DiffKind, DiffRow},
     feedback::{ReviewFile, Side, Snapshot, line_range, lines},
     markdown::{self, Mark},
-    session::Session,
+    session::{DiskStatus, Session},
 };
 use anyhow::{Context, Result, ensure};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -42,15 +42,34 @@ pub enum Prompt {
 pub struct Draft {
     pub editor: Editor,
     purpose: Purpose,
+    /// The text the draft started with: empty, or the edited comment's body.
+    original: String,
+    /// Esc was pressed once on written text; a second Esc discards it.
+    discarding: bool,
 }
 
 impl Draft {
+    fn new(purpose: Purpose, original: String) -> Self {
+        Self {
+            editor: Editor::new(original.clone()),
+            purpose,
+            original,
+            discarding: false,
+        }
+    }
+
     /// The comment being edited; `None` for a new comment on the selected rows.
     pub fn editing(&self) -> Option<&str> {
         match &self.purpose {
             Purpose::Add { .. } => None,
             Purpose::Edit { comment_id } => Some(comment_id),
         }
+    }
+
+    /// Whether discarding the draft would lose text the user wrote.
+    fn written(&self) -> bool {
+        let text = self.editor.text();
+        !text.trim().is_empty() && text != self.original
     }
 }
 
@@ -130,7 +149,7 @@ impl App {
             help: false,
             quit: false,
         };
-        app.rebuild();
+        app.show(0, View::Main, None);
         app
     }
 
@@ -180,6 +199,7 @@ impl App {
 
     pub fn paste(&mut self, text: &str) {
         if let Some(Prompt::Draft(draft)) = &mut self.prompt {
+            draft.discarding = false;
             draft.editor.insert(text);
         }
     }
@@ -196,12 +216,20 @@ impl App {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match &mut self.prompt {
             Some(Prompt::Draft(draft)) => match key.code {
-                KeyCode::Esc => {
-                    self.prompt = None;
-                    self.say("Draft cancelled");
+                // Written text takes a second Esc, so a habitual Esc cannot lose it.
+                KeyCode::Esc if draft.written() && !draft.discarding => {
+                    draft.discarding = true;
+                    self.say("Press esc again to discard this draft.");
                 }
-                KeyCode::Char('s') if control => self.record()?,
-                _ => draft.editor.key(key),
+                KeyCode::Esc => self.prompt = None,
+                KeyCode::Char('s') if control => {
+                    draft.discarding = false;
+                    self.record()?;
+                }
+                _ => {
+                    draft.discarding = false;
+                    draft.editor.key(key);
+                }
             },
             Some(Prompt::ConfirmQuit) => match key.code {
                 // A failed save keeps the prompt open, with the error beside it.
@@ -236,22 +264,42 @@ impl App {
             KeyCode::Char('c') if control => self.request_quit(),
             KeyCode::Char('q') => self.request_quit(),
             KeyCode::Char('s') => self.save()?,
-            KeyCode::Tab => {
-                self.focus = match self.focus {
-                    Focus::Content => Focus::Comments,
-                    Focus::Comments => Focus::Content,
+            // `a` as in the browser, where Tab moves focus; Tab as well.
+            KeyCode::Tab | KeyCode::Char('a') if self.focus == Focus::Comments => {
+                self.focus = Focus::Content
+            }
+            KeyCode::Tab | KeyCode::Char('a') => {
+                self.focus = Focus::Comments;
+                // Choosing in the list moves the cursor, which must not stretch a selection.
+                self.anchor = None;
+                // The list opens on this file's comments.
+                let comments = self.session.comments();
+                let file = &self.current_file().id;
+                if comments
+                    .get(self.comment)
+                    .is_none_or(|c| &c.target.file_id != file)
+                {
+                    let order = self.comment_order();
+                    let here = order.iter().find(|&&i| &comments[i].target.file_id == file);
+                    self.comment = here.or(order.first()).copied().unwrap_or(0);
                 }
+                self.follow();
             }
-            KeyCode::Char(']') => {
-                self.show((self.file + 1) % self.session.files().len(), View::Main, 0)
-            }
+            KeyCode::Char(']') => self.show(
+                (self.file + 1) % self.session.files().len(),
+                View::Main,
+                None,
+            ),
             KeyCode::Char('[') => {
                 let count = self.session.files().len();
-                self.show((self.file + count - 1) % count, View::Main, 0);
+                self.show((self.file + count - 1) % count, View::Main, None);
             }
             KeyCode::Char('b') => self.cycle_view(),
             KeyCode::Char('o') => self.set_context_side(Side::Old),
             KeyCode::Char('n') => self.set_context_side(Side::New),
+            KeyCode::Char('r') if self.session.disk(self.file).status == DiskStatus::Detached => {
+                self.say("Reopen with --root DIR to see changes on disk.");
+            }
             KeyCode::Char('r') => {
                 self.session.refresh();
                 let view = if self.view == View::Disk {
@@ -259,12 +307,13 @@ impl App {
                 } else {
                     View::Disk
                 };
-                self.show(self.file, view, 0);
+                self.show(self.file, view, None);
             }
             KeyCode::Left | KeyCode::Char('h') => {
                 self.scroll_x = self.scroll_x.saturating_sub(SCROLL_STEP)
             }
             KeyCode::Right | KeyCode::Char('l') => self.scroll_x += SCROLL_STEP,
+            KeyCode::Esc if self.focus == Focus::Comments => self.focus = Focus::Content,
             KeyCode::Esc => self.anchor = None,
             code => match self.focus {
                 Focus::Content => match navigate(code, self.cursor, self.rows.len()) {
@@ -275,7 +324,10 @@ impl App {
                     let order = self.comment_order();
                     let at = order.iter().position(|&i| i == self.comment).unwrap_or(0);
                     match navigate(code, at, order.len()) {
-                        Some(at) => self.comment = order.get(at).copied().unwrap_or(0),
+                        Some(at) => {
+                            self.comment = order.get(at).copied().unwrap_or(0);
+                            self.follow();
+                        }
                         None => self.comments_key(code)?,
                     }
                 }
@@ -293,10 +345,8 @@ impl App {
                 }
             }
             KeyCode::Char('c') => {
-                self.prompt = Some(Prompt::Draft(Draft {
-                    editor: Editor::default(),
-                    purpose: self.selected_target()?,
-                }));
+                let purpose = self.selected_target()?;
+                self.prompt = Some(Prompt::Draft(Draft::new(purpose, String::new())));
             }
             _ => {}
         }
@@ -308,16 +358,17 @@ impl App {
             return Ok(());
         }
         match code {
-            KeyCode::Enter => self.revisit()?,
+            KeyCode::Enter => {
+                self.revisit(true)?;
+                self.focus = Focus::Content;
+            }
             KeyCode::Char('e') => {
-                self.revisit()?;
+                self.revisit(false)?;
                 let comment = &self.session.comments()[self.comment];
-                self.prompt = Some(Prompt::Draft(Draft {
-                    editor: Editor::new(comment.body.clone()),
-                    purpose: Purpose::Edit {
-                        comment_id: comment.id.clone(),
-                    },
-                }));
+                let purpose = Purpose::Edit {
+                    comment_id: comment.id.clone(),
+                };
+                self.prompt = Some(Prompt::Draft(Draft::new(purpose, comment.body.clone())));
             }
             KeyCode::Char('d') => self.prompt = Some(Prompt::ConfirmDelete),
             _ => {}
@@ -378,12 +429,14 @@ impl App {
             .and_then(|at| order.get(at.min(order.len().saturating_sub(1))))
             .copied()
             .unwrap_or(0);
+        self.follow();
         self.say("Comment deleted. Press s to save feedback.");
         Ok(())
     }
 
-    /// Shows the selected comment's original target in its reviewed snapshot.
-    fn revisit(&mut self) -> Result<()> {
+    /// Shows the chosen comment's lines with the cursor where the comment hangs: in the diff
+    /// when it shows them, otherwise in its side's full text. `select` also selects them.
+    fn revisit(&mut self, select: bool) -> Result<()> {
         let target = &self.session.comments()[self.comment].target;
         let file = self
             .session
@@ -392,16 +445,54 @@ impl App {
             .position(|f| f.id == target.file_id)
             .context("The comment's file is not in this review")?;
         let (side, first, last) = (target.side, target.start_line, target.end_line);
-        self.show(file, View::Snapshot(side), first - 1);
-        self.say(format!("Original {side} L{first}–{last}"));
+        self.show(file, View::Main, None);
+        // The diff serves when it shows every line of the range, each on a row that takes
+        // comments on the comment's side: context rows take the side `o` and `n` chose, and a
+        // replaced line puts the other side's row in between. Otherwise the side's full text.
+        let whole = |start: usize, end: usize| {
+            end.checked_sub(start) == Some(last - first)
+                && self.rows[start..=end]
+                    .iter()
+                    .all(|row| row.target.is_some_and(|(s, _)| s == side))
+        };
+        let rows = match (self.row_of(side, first), self.row_of(side, last)) {
+            (Some(start), Some(end)) if whole(start, end) => (start, end),
+            _ => {
+                self.show(file, View::Snapshot(side), None);
+                (first - 1, last - 1)
+            }
+        };
+        self.anchor = select.then_some(rows.0);
+        self.cursor = rows.1;
         Ok(())
+    }
+
+    /// Puts the cursor on the comment chosen in the list when this view shows it.
+    fn follow(&mut self) {
+        let Some(comment) = self.session.comments().get(self.comment) else {
+            return;
+        };
+        let t = &comment.target;
+        if self.view == View::Disk || t.file_id != self.current_file().id {
+            return;
+        }
+        if let Some(row) = self.row_of(t.side, t.end_line) {
+            self.cursor = row;
+        }
+    }
+
+    /// The row showing line `line` of `side`.
+    fn row_of(&self, side: Side, line: usize) -> Option<usize> {
+        self.rows
+            .iter()
+            .position(|row| row.lines.contains(&Some((side, line))))
     }
 
     /// Cycles a Git change through its unified diff and each full snapshot.
     fn cycle_view(&mut self) {
         let file = self.current_file();
         if !file.is_diff() {
-            self.say("b switches sides of Git changes; this file has one source");
+            self.say("b cycles the diff, old, and new views of Git changes.");
             return;
         }
         let sides: Vec<Side> = file.snapshots.iter().map(|s| s.side).collect();
@@ -410,22 +501,31 @@ impl App {
             View::Snapshot(side) => sides.iter().skip_while(|&&s| s != side).nth(1).copied(),
             View::Disk => None,
         };
-        self.show(self.file, next.map_or(View::Main, View::Snapshot), 0);
+        self.show(self.file, next.map_or(View::Main, View::Snapshot), None);
     }
 
     fn set_context_side(&mut self, side: Side) {
+        if !self.current_file().is_diff() {
+            self.say("o and n apply to Git diffs.");
+            return;
+        }
         self.context_side = side;
         self.rebuild();
-        self.say(format!("Diff context lines target the {side} side"));
+        self.say(format!(
+            "Comments on context lines now go to the {side} side."
+        ));
     }
 
-    fn show(&mut self, file: usize, view: View, cursor: usize) {
+    /// Shows `view` of `file` with the cursor on row `cursor`, or by default on the first line
+    /// that takes comments, past a diff's first hunk label.
+    fn show(&mut self, file: usize, view: View, cursor: Option<usize>) {
         self.file = file;
         self.view = view;
-        self.cursor = cursor;
         self.anchor = None;
         self.scroll_x = 0;
         self.rebuild();
+        let first = || self.rows.iter().position(|r| r.target.is_some());
+        self.cursor = cursor.or_else(first).unwrap_or(0).min(self.rows.len() - 1);
     }
 
     fn rebuild(&mut self) {
@@ -472,18 +572,21 @@ impl App {
     /// The comment target for the selected rows.
     fn selected_target(&self) -> Result<Purpose> {
         let (first, last) = self.selection();
-        let (side, start) = self.rows[first]
-            .target
-            .context("Select reviewed content; revisions are read-only")?;
-        let (_, end) = self.rows[last]
-            .target
-            .context("End the selection on reviewed content")?;
+        let read_only = || {
+            if self.view == View::Disk {
+                "Changes on disk are read-only. Press r to return to the review."
+            } else {
+                "Choose numbered lines; hunk labels take no comments."
+            }
+        };
+        let (side, start) = self.rows[first].target.with_context(read_only)?;
+        let (_, end) = self.rows[last].target.with_context(read_only)?;
         ensure!(
             self.rows[first..=last]
                 .iter()
                 .filter_map(|row| row.target)
                 .all(|(s, _)| s == side),
-            "Select a single diff side; b shows the full old and new sources"
+            "Select a single diff side; b shows the full old and new sources."
         );
         let file = self.current_file();
         let snapshot = file.snapshot(side).context("This side has no snapshot")?;
@@ -514,7 +617,7 @@ fn navigate(code: KeyCode, position: usize, len: usize) -> Option<usize> {
     Some(match code {
         KeyCode::Down | KeyCode::Char('j') => (position + 1).min(last),
         KeyCode::Up | KeyCode::Char('k') => position.saturating_sub(1),
-        KeyCode::PageDown => (position + PAGE).min(last),
+        KeyCode::PageDown | KeyCode::Char(' ') => (position + PAGE).min(last),
         KeyCode::PageUp => position.saturating_sub(PAGE),
         KeyCode::Home | KeyCode::Char('g') => 0,
         KeyCode::End | KeyCode::Char('G') => last,
@@ -637,10 +740,11 @@ mod tests {
         let session = Session::new(feedback, None, dir.path().join("out.json")).unwrap();
         let mut app = App::new(session);
         // Rows: hunk, context (new side until `o`), deleted line (old), added line (new).
+        // The cursor starts past the hunk label, on the first line that takes comments.
+        assert_eq!(app.cursor, 1);
         press(
             &mut app,
             &[
-                KeyCode::Char('j'),
                 KeyCode::Char('v'),
                 KeyCode::Char('j'),
                 KeyCode::Char('j'),
@@ -698,5 +802,170 @@ mod tests {
             &[KeyCode::Char('k'), KeyCode::Char('d'), KeyCode::Char('y')],
         );
         assert_eq!(app.session.comments()[app.comment].body, "third");
+    }
+
+    #[test]
+    fn the_comment_list_leads_to_its_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let text: String = (1..=30).map(|n| format!("line {n}\n")).collect();
+        fs::write(dir.path().join("a.md"), text).unwrap();
+        let session =
+            Session::open(&[dir.path().join("a.md")], dir.path().join("out.json")).unwrap();
+        let mut app = App::new(session);
+        press(&mut app, &[KeyCode::Char('v'), KeyCode::Char('j')]);
+        record(&mut app, "first two");
+        press(
+            &mut app,
+            &[KeyCode::Char('G'), KeyCode::Char('v'), KeyCode::Char('k')],
+        );
+        record(&mut app, "last two");
+        press(&mut app, &[KeyCode::Char('g')]);
+
+        // Choosing in the list moves the cursor to where the comment hangs.
+        press(&mut app, &[KeyCode::Tab, KeyCode::Char('j')]);
+        assert_eq!(app.cursor, 29);
+        // Enter closes the list and selects the comment's lines.
+        press(&mut app, &[KeyCode::Char('k'), KeyCode::Enter]);
+        assert!(app.focus == Focus::Content);
+        assert_eq!(app.selection(), (0, 1));
+        // Esc closes the list, like the key list.
+        press(&mut app, &[KeyCode::Esc, KeyCode::Tab, KeyCode::Esc]);
+        assert!(app.focus == Focus::Content);
+        // Opening the list shows its choice, and deleting shows the comment chosen next.
+        press(&mut app, &[KeyCode::Char('G'), KeyCode::Tab]);
+        assert_eq!(app.cursor, 1);
+        press(&mut app, &[KeyCode::Char('d'), KeyCode::Char('y')]);
+        assert_eq!(app.cursor, 29);
+    }
+
+    #[test]
+    fn going_to_an_old_side_context_comment_keeps_its_side() {
+        let feedback_file = crate::feedback::ReviewFile::new(
+            "note.txt".into(),
+            vec![
+                Snapshot::new(Side::Old, "base", "context\nold\n".into()),
+                Snapshot::new(Side::New, "working tree", "context\nnew\n".into()),
+            ],
+        );
+        let feedback =
+            crate::feedback::Feedback::new(std::path::Path::new("/"), vec![feedback_file]);
+        let dir = tempfile::tempdir().unwrap();
+        let session = Session::new(feedback, None, dir.path().join("out.json")).unwrap();
+        let mut app = App::new(session);
+        // A comment on the old side of the context line, then context back on the new side.
+        press(&mut app, &[KeyCode::Char('o')]);
+        record(&mut app, "old context");
+        press(
+            &mut app,
+            &[KeyCode::Char('n'), KeyCode::Tab, KeyCode::Enter],
+        );
+        let Purpose::Add { snapshot_id, .. } = app.selected_target().unwrap() else {
+            panic!("a new comment");
+        };
+        let old = app.current_file().snapshot(Side::Old).unwrap();
+        assert_eq!(
+            snapshot_id, old.id,
+            "the selection targets the comment's side"
+        );
+    }
+
+    #[test]
+    fn going_to_a_comment_across_a_replacement_shows_its_side() {
+        let feedback_file = crate::feedback::ReviewFile::new(
+            "note.txt".into(),
+            vec![
+                Snapshot::new(Side::Old, "base", "a\nb\nc\n".into()),
+                Snapshot::new(Side::New, "working tree", "a\nB\nc\n".into()),
+            ],
+        );
+        let feedback =
+            crate::feedback::Feedback::new(std::path::Path::new("/"), vec![feedback_file]);
+        let dir = tempfile::tempdir().unwrap();
+        let session = Session::new(feedback, None, dir.path().join("out.json")).unwrap();
+        let mut app = App::new(session);
+        // New lines 1-3 in the full new text, so the diff's deleted old line 2 lies between.
+        press(
+            &mut app,
+            &[KeyCode::Char('b'), KeyCode::Char('b'), KeyCode::Char('v')],
+        );
+        press(&mut app, &[KeyCode::Char('j'), KeyCode::Char('j')]);
+        record(&mut app, "all three");
+        press(
+            &mut app,
+            &[KeyCode::Char('b'), KeyCode::Tab, KeyCode::Enter],
+        );
+        assert!(app.view == View::Snapshot(Side::New));
+        assert!(
+            app.selected_target().is_ok(),
+            "c comments on the same lines"
+        );
+    }
+
+    #[test]
+    fn the_list_does_not_stretch_a_selection() {
+        let dir = tempfile::tempdir().unwrap();
+        let text: String = (1..=20).map(|n| format!("line {n}\n")).collect();
+        fs::write(dir.path().join("a.md"), text).unwrap();
+        let session =
+            Session::open(&[dir.path().join("a.md")], dir.path().join("out.json")).unwrap();
+        let mut app = App::new(session);
+        press(&mut app, &[KeyCode::Char('G')]);
+        record(&mut app, "last line");
+        // Lines 1-3 selected, then the list opens and follows its comment to line 20.
+        press(&mut app, &[KeyCode::Char('g'), KeyCode::Char('v')]);
+        press(&mut app, &[KeyCode::Char('j'), KeyCode::Char('j')]);
+        press(&mut app, &[KeyCode::Tab, KeyCode::Char('j'), KeyCode::Tab]);
+        assert_eq!(app.selection(), (19, 19));
+    }
+
+    #[test]
+    fn a_failed_record_needs_esc_twice_again() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "text\n").unwrap();
+        let session =
+            Session::open(&[dir.path().join("a.md")], dir.path().join("out.json")).unwrap();
+        let mut app = App::new(session);
+        press(&mut app, &[KeyCode::Char('c')]);
+        // Longer than a comment may be, so recording fails.
+        app.paste(&"x".repeat(40 << 10));
+        press(&mut app, &[KeyCode::Esc]);
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(app.notice.as_ref().is_some_and(|n| n.error));
+        press(&mut app, &[KeyCode::Esc]);
+        assert!(
+            matches!(app.prompt, Some(Prompt::Draft(_))),
+            "the draft survives"
+        );
+    }
+
+    #[test]
+    fn written_drafts_take_a_second_esc() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "text\n").unwrap();
+        let session =
+            Session::open(&[dir.path().join("a.md")], dir.path().join("out.json")).unwrap();
+        let mut app = App::new(session);
+        press(&mut app, &[KeyCode::Char('c'), KeyCode::Esc]);
+        assert!(app.prompt.is_none(), "an empty draft closes at once");
+
+        press(&mut app, &[KeyCode::Char('c')]);
+        app.paste("keep me");
+        press(&mut app, &[KeyCode::Esc]);
+        assert!(matches!(app.prompt, Some(Prompt::Draft(_))));
+        assert!(
+            app.notice
+                .as_ref()
+                .is_some_and(|n| n.text.contains("esc again"))
+        );
+        // Typing again needs another two presses.
+        press(&mut app, &[KeyCode::Char('!'), KeyCode::Esc]);
+        assert!(matches!(app.prompt, Some(Prompt::Draft(_))));
+        press(&mut app, &[KeyCode::Esc]);
+        assert!(app.prompt.is_none());
+
+        // An edit that changed nothing closes at once.
+        record(&mut app, "recorded");
+        press(&mut app, &[KeyCode::Tab, KeyCode::Char('e'), KeyCode::Esc]);
+        assert!(app.prompt.is_none());
     }
 }

@@ -26,6 +26,7 @@
       class="row {row.kind}"
       id="r{n}"
       class:sel={i >= part.from && i <= part.to}
+      class:passage={part.passage}
       class:sel-first={i === part.first}
       class:sel-last={i === part.last}
       class:cur={i === part.cursor}

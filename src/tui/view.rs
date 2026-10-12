@@ -3,11 +3,16 @@
 //! Blue belongs to the review layer (comments, selection, cursor, focus); content stays neutral.
 
 use super::{
-    app::{App, Draft, Focus, Notice, Prompt, Row, View},
-    text::{clean, cleaned, fit, grapheme_width, pad, text_width, wrap},
+    app::{App, Draft, Focus, Prompt, Row, View},
+    text::{clean, cleaned, fit, fit_start, grapheme_width, pad, text_width, wrap},
     theme::Theme,
 };
-use crate::{diff::DiffKind, feedback::Side, markdown, session::DiskStatus};
+use crate::{
+    diff::DiffKind,
+    feedback::{Side, Target, lines},
+    markdown,
+    session::DiskStatus,
+};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -27,15 +32,16 @@ const LISTED: usize = 10;
 /// Width of the `› ` prompt in front of comment text.
 const PROMPT: usize = 2;
 
-/// The key reference, one column per group.
+/// The key reference, one column per group. The last group becomes a line of its own where
+/// its column does not fit.
 const KEYS: [(&str, &[(&str, &str)]); 4] = [
     (
         "move",
         &[
             ("j k", "line"),
-            ("pgup pgdn", "page"),
+            ("space", "page"),
             ("g G", "top, bottom"),
-            ("h l", "scroll sideways"),
+            ("h l", "sideways"),
         ],
     ),
     (
@@ -43,10 +49,10 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("v", "select lines"),
             ("c", "comment"),
-            ("tab", "all comments"),
+            ("esc", "clear, cancel"),
+            ("a", "all comments"),
             ("enter", "go to comment"),
-            ("e", "edit"),
-            ("d", "delete"),
+            ("e d", "edit, delete"),
         ],
     ),
     (
@@ -54,12 +60,24 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
         &[
             ("[ ]", "previous, next file"),
             ("b", "diff, old, new"),
-            ("o n", "comment context on old, new"),
-            ("r", "show changes on disk"),
+            ("o n", "context on old, new"),
+            ("r", "changes on disk"),
         ],
     ),
-    ("feedback", &[("s", "save"), ("q", "quit"), ("?", "close")]),
+    (
+        "feedback",
+        &[
+            ("ctrl+s", "record comment"),
+            ("s", "save"),
+            ("q", "quit"),
+            ("?", "close"),
+        ],
+    ),
 ];
+/// Cells between key columns, and between hints on one line.
+const KEY_GAP: usize = 4;
+/// Cells at least between the hints and the status on the key line.
+const STATUS_GAP: usize = 3;
 
 /// The interaction shown in the card above the key line.
 enum Card<'a> {
@@ -122,7 +140,11 @@ fn card_height(app: &App, card: &Card, area: Rect) -> u16 {
                 .min(most)
         }
         Card::Comments => listing(app).len().clamp(1, LISTED),
-        Card::Keys => KEYS.iter().map(|(_, pairs)| pairs.len()).max().unwrap_or(0) + 2,
+        Card::Keys => {
+            let grid = KeyGrid::new(card_width(area));
+            // The grid, the feedback line when it is not a column, and the save destination.
+            grid.height() + usize::from(grid.groups < KEYS.len()) + 1
+        }
         Card::Quit => 3,
     };
     cells(inner + 2)
@@ -154,15 +176,20 @@ fn render_header(frame: &mut Frame, [area, rule]: [Rect; 2], app: &App, theme: &
             }
         })
         .collect();
+    let available = usize::from(area.width).saturating_sub(width(&spans) + width(&right) + 2);
+    let mut labels = labels;
+    // A path too long for the header keeps its end, where the file name is.
+    let overflow = if files.len() > 1 { TAB_OVERFLOW } else { 0 };
+    let room = available.saturating_sub(overflow + counts[app.file].len());
+    labels[app.file] = fit_start(&labels[app.file], room);
     let widths: Vec<usize> = labels
         .iter()
         .zip(&counts)
         .map(|(label, count)| text_width(label) + count.len())
         .collect();
-    let available = usize::from(area.width).saturating_sub(width(&spans) + width(&right) + 2);
     let (first, end) = tab_window(&widths, app.file, available);
     if first > 0 {
-        spans.push(Span::styled(format!("‹ {first}   "), theme.faint));
+        spans.push(Span::styled(format!("+{first}   "), theme.faint));
     }
     let mut underline = 0..0;
     for (i, label) in labels.iter().enumerate().take(end).skip(first) {
@@ -183,7 +210,7 @@ fn render_header(frame: &mut Frame, [area, rule]: [Rect; 2], app: &App, theme: &
     }
     if end < labels.len() {
         spans.push(Span::styled(
-            format!("   {} ›", labels.len() - end),
+            format!("   +{}", labels.len() - end),
             theme.faint,
         ));
     }
@@ -200,20 +227,21 @@ fn render_header(frame: &mut Frame, [area, rule]: [Rect; 2], app: &App, theme: &
     frame.render_widget(line, rule);
 }
 
+/// Room in the header for the "+n" counts of tabs out of view on either side.
+const TAB_OVERFLOW: usize = 12;
+
 /// The range of tabs to show around `current` within `available` cells.
 fn tab_window(widths: &[usize], current: usize, available: usize) -> (usize, usize) {
-    // Room for the "‹ n" and "n ›" overflow counts.
-    const OVERFLOW: usize = 12;
     let cost = |i: usize| widths[i] + 3;
     let (mut first, mut end, mut used) = (current, current + 1, cost(current));
     loop {
         let mut grew = false;
-        if end < widths.len() && used + cost(end) + OVERFLOW <= available {
+        if end < widths.len() && used + cost(end) + TAB_OVERFLOW <= available {
             used += cost(end);
             end += 1;
             grew = true;
         }
-        if first > 0 && used + cost(first - 1) + OVERFLOW <= available {
+        if first > 0 && used + cost(first - 1) + TAB_OVERFLOW <= available {
             used += cost(first - 1);
             first -= 1;
             grew = true;
@@ -401,6 +429,17 @@ fn render_content(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     }
 
     let selecting = app.anchor.is_some() || adding;
+    let covers = |t: &Target, row: &Row| {
+        row.lines
+            .iter()
+            .flatten()
+            .any(|&(side, n)| side == t.side && (t.start_line..=t.end_line).contains(&n))
+    };
+    // While the list is open, the chosen comment's lines show as selected.
+    let chosen = comments
+        .iter()
+        .find(|(index, _)| app.focus == Focus::Comments && *index == app.comment)
+        .map(|(_, c)| &c.target);
     // Each line with whether its text runs past the right edge.
     let mut lines: Vec<(Line, bool)> = Vec::with_capacity(height);
     let mut last = top;
@@ -409,18 +448,14 @@ fn render_content(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
             break;
         }
         last = i;
-        let selected = selecting && (from..=to).contains(&i);
+        let selected =
+            (selecting && (from..=to).contains(&i)) || chosen.is_some_and(|t| covers(t, row));
         // A draft's range shows its rail before the comment is recorded.
-        let commented = (adding && selected)
-            || comments.iter().any(|(_, c)| {
-                let t = &c.target;
-                row.lines
-                    .iter()
-                    .flatten()
-                    .any(|&(side, n)| side == t.side && (t.start_line..=t.end_line).contains(&n))
-            });
+        let commented =
+            (adding && selected) || comments.iter().any(|(_, c)| covers(&c.target, row));
         let state = RowState {
-            cursor: i == app.cursor,
+            // While the list has the keys, only its chosen comment is marked.
+            cursor: i == app.cursor && app.focus == Focus::Content,
             selected,
             commented,
         };
@@ -537,7 +572,8 @@ fn row_line(
     if gutter.diff {
         spans.extend([Span::raw(" "), number(row.lines[1])]);
     }
-    let marker = if state.commented { "▎" } else { " " };
+    // A light line in the cell's middle, so the rail runs straight into its comment's curl.
+    let marker = if state.commented { "│" } else { " " };
     spans.extend([
         Span::raw(" "),
         Span::styled(marker, theme.note.remove_modifier(Modifier::ITALIC)),
@@ -701,10 +737,11 @@ fn card_block(title: String, style: Style) -> Block<'static> {
     Block::new()
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(style)
-        .title(Span::styled(
-            format!(" {title} "),
-            style.add_modifier(Modifier::BOLD),
-        ))
+        // A short rule before the title, as in the browser.
+        .title(Line::from(vec![
+            Span::styled("─", style),
+            Span::styled(format!(" {title} "), style.add_modifier(Modifier::BOLD)),
+        ]))
         .padding(Padding::horizontal(1))
 }
 
@@ -855,6 +892,9 @@ fn render_comments(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         })
         .collect();
     let place_width = places.iter().map(|p| text_width(p)).max().unwrap_or(0);
+    // Comments start on the document's text column, with their lines right-aligned before
+    // them, unless a wide place needs more room; the chevron sits on the card's edge.
+    let text = (Gutter::of(app).text() - 1).max(place_width + 2);
     let visible = usize::from(inner.height).max(1);
     let at = listed
         .iter()
@@ -862,33 +902,35 @@ fn render_comments(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         .unwrap_or(0);
     // Keep the selected comment in view, with its file heading when it fits.
     let first = at.saturating_sub(visible - 1);
-    let body_width = usize::from(inner.width).saturating_sub(4 + place_width + 2);
+    let body_width = usize::from(area.width).saturating_sub(text);
     for (line, y) in listed[first..].iter().zip(inner.top()..inner.bottom()) {
         let line = match *line {
             Listed::File(i) => Line::styled(clean(&comments[i].target.path), theme.muted),
             Listed::Comment(i) => {
                 let chosen = i == app.comment;
                 let (marker, place, base) = if chosen {
-                    ("› ", Style::new(), theme.selection)
+                    ("›", Style::new(), theme.selection)
                 } else {
-                    ("  ", theme.faint, Style::new())
+                    (" ", theme.faint, Style::new())
                 };
                 let body = clean(&comments[i].body.replace('\n', " ↵ "));
+                let indent = " ".repeat(text - 2 - text_width(&places[i]));
                 Line::from(vec![
-                    Span::styled(format!("  {marker}"), theme.accent),
-                    Span::styled(pad(&places[i], place_width), place),
-                    Span::raw("  "),
+                    Span::styled(marker, theme.accent),
+                    Span::styled(format!("{indent}{}", places[i]), place),
+                    Span::raw(" "),
                     Span::raw(fit(&body, body_width)),
                 ])
                 .style(base)
             }
         };
+        // The band of the chosen comment spans the card, like the cursor's the content.
         frame.render_widget(
             line,
             Rect {
                 y,
                 height: 1,
-                ..inner
+                ..area
             },
         );
     }
@@ -896,105 +938,286 @@ fn render_comments(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
 
 fn render_keys(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let block = card_block("Keys".into(), theme.accent);
-    // Each group is a column with its keys, then its labels, on shared left edges.
-    let columns: Vec<(usize, usize)> = KEYS
-        .iter()
-        .map(|(_, pairs)| {
-            let key = pairs.iter().map(|(k, _)| text_width(k)).max();
-            let label = pairs.iter().map(|(_, l)| text_width(l)).max();
-            (key.unwrap_or(0), label.unwrap_or(0))
-        })
-        .collect();
-    let rows = KEYS.iter().map(|(_, pairs)| pairs.len()).max().unwrap_or(0);
-    let mut lines = Vec::with_capacity(rows + 3);
-    lines.push(Line::from(
-        KEYS.iter()
-            .zip(&columns)
-            .flat_map(|((group, _), (key, label))| {
-                [Span::styled(pad(group, key + label + 5), theme.muted)]
-            })
-            .collect::<Vec<_>>(),
-    ));
-    for row in 0..rows {
-        let mut spans = Vec::new();
-        for ((_, pairs), &(key, label)) in KEYS.iter().zip(&columns) {
-            let (k, l) = pairs.get(row).copied().unwrap_or(("", ""));
-            spans.push(Span::raw(pad(k, key + 1)));
-            spans.push(Span::styled(pad(l, label + 4), theme.muted));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let room = usize::from(inner.width);
+    let grid = KeyGrid::new(room);
+    let mut lines = Vec::new();
+    // Each group is a column of keys and labels; columns share left edges from row to row.
+    for row in KEYS[..grid.groups].chunks(grid.columns) {
+        let gap = |j: usize| if j + 1 < row.len() { KEY_GAP } else { 0 };
+        lines.push(Line::from(
+            row.iter()
+                .enumerate()
+                .map(|(j, (name, _))| {
+                    let (key, label) = grid.widths[j];
+                    Span::styled(pad(name, key + 1 + label + gap(j)), theme.faint)
+                })
+                .collect::<Vec<_>>(),
+        ));
+        for n in 0..rows_of(row) {
+            let mut spans = Vec::new();
+            for (j, (_, pairs)) in row.iter().enumerate() {
+                let (key, label) = grid.widths[j];
+                let (k, l) = pairs.get(n).copied().unwrap_or(("", ""));
+                spans.push(Span::raw(pad(k, key + 1)));
+                spans.push(Span::styled(pad(l, label + gap(j)), theme.muted));
+            }
+            lines.push(Line::from(spans));
         }
-        lines.push(Line::from(spans));
+        lines.push(Line::default());
     }
+    if grid.groups < KEYS.len() {
+        lines.push(Line::from(key_spans(KEYS[KEYS.len() - 1].1, theme)));
+    }
+    let output = clean(&app.session.output().display().to_string());
+    let label = "saves to  ";
     lines.push(Line::from(vec![
-        Span::styled("saves to  ", theme.muted),
-        Span::raw(clean(&app.session.output().display().to_string())),
+        Span::styled(label, theme.muted),
+        Span::raw(fit_start(&output, room.saturating_sub(label.len()))),
     ]));
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The key groups laid out as rows of side-by-side columns.
+struct KeyGrid {
+    /// Groups side by side.
+    columns: usize,
+    /// Groups in the grid; a last group left alone in a row takes a line of its own instead.
+    groups: usize,
+    /// The widest key and label of each column, in cells.
+    widths: Vec<(usize, usize)>,
+}
+
+impl KeyGrid {
+    /// The most columns that fit in `width` cells.
+    fn new(width: usize) -> Self {
+        let grid = |columns: usize| {
+            let groups = if columns > 1 && KEYS.len() % columns == 1 {
+                KEYS.len() - 1
+            } else {
+                KEYS.len()
+            };
+            let widths = (0..columns)
+                .map(|j| {
+                    let column = (j..groups).step_by(columns).map(|g| KEYS[g].1);
+                    column
+                        .map(key_widths)
+                        .fold((0, 0), |(k, l), (key, label)| (k.max(key), l.max(label)))
+                })
+                .collect();
+            Self {
+                columns,
+                groups,
+                widths,
+            }
+        };
+        (1..=KEYS.len())
+            .rev()
+            .map(grid)
+            .find(|grid| grid.width() <= width)
+            .unwrap_or_else(|| grid(1))
+    }
+
+    fn width(&self) -> usize {
+        let text: usize = self.widths.iter().map(|(key, label)| key + 1 + label).sum();
+        text + KEY_GAP * (self.columns - 1)
+    }
+
+    /// Lines the grid takes, each row of columns followed by a blank line.
+    fn height(&self) -> usize {
+        KEYS[..self.groups]
+            .chunks(self.columns)
+            .map(|row| 2 + rows_of(row))
+            .sum()
+    }
+}
+
+/// A key group's widest key and widest label, in cells.
+fn key_widths(pairs: &[(&str, &str)]) -> (usize, usize) {
+    let key = pairs.iter().map(|(k, _)| text_width(k)).max();
+    let label = pairs.iter().map(|(_, l)| text_width(l)).max();
+    (key.unwrap_or(0), label.unwrap_or(0))
+}
+
+/// Rows of the longest group in a row of columns.
+fn rows_of(groups: &[(&str, &[(&str, &str)])]) -> usize {
+    groups
+        .iter()
+        .map(|(_, pairs)| pairs.len())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Cells for text inside a card: the screen less the card's inset and padding.
+fn card_width(screen: Rect) -> usize {
+    usize::from(screen.width).saturating_sub(4)
 }
 
 fn render_quit(frame: &mut Frame, area: Rect, theme: &Theme) {
     let block = card_block("Unsaved feedback".into(), theme.accent);
+    let keys = [
+        ("s", "save and quit"),
+        ("d", "discard"),
+        ("esc", "keep reviewing"),
+    ];
     let lines = vec![
         Line::styled("Comments changed since the last save.", theme.muted),
         Line::default(),
-        Line::from(key_spans(
-            &[
-                ("s", "save and quit"),
-                ("d", "discard"),
-                ("esc", "keep reviewing"),
-            ],
-            theme,
-        )),
+        Line::from(key_spans(&keys, theme)),
     ];
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let mut left = vec![Span::raw(" ")];
-    match &app.notice {
-        Some(Notice { text, error: true }) => {
-            left.extend([
-                Span::styled("✕ ", theme.error),
-                Span::styled(clean(text), theme.error),
-            ]);
-        }
-        Some(Notice { text, .. }) => {
-            left.extend([Span::styled("› ", theme.accent), Span::raw(clean(text))]);
-        }
-        None => left.extend(key_spans(&hints(app), theme)),
-    }
     let count = app.session.comments().len();
-    let mut right = vec![
-        Span::styled(
-            format!("{}/{}   ", app.cursor + 1, app.rows.len()),
-            theme.faint,
-        ),
-        Span::styled(
-            match count {
-                0 => "no comments".into(),
-                1 => "1 comment".into(),
-                n => format!("{n} comments"),
-            },
-            theme.muted,
-        ),
-    ];
-    if app.session.is_dirty() {
-        right.extend([Span::styled("   ● ", theme.accent), Span::raw("unsaved")]);
+    let count = Span::styled(
+        match count {
+            0 => "no comments".into(),
+            1 => "1 comment".into(),
+            n => format!("{n} comments"),
+        },
+        theme.muted,
+    );
+    // The status from most to least detailed: the cursor position goes first, then the
+    // saved file's name, when the hints need the room.
+    let state: Vec<Vec<Span>> = if app.session.is_dirty() {
+        vec![vec![
+            Span::styled("   ● ", theme.accent),
+            Span::raw("unsaved"),
+        ]]
     } else if let Some(saved) = app.session.last_saved() {
         let name = saved
             .file_name()
             .map(|n| n.to_string_lossy())
             .unwrap_or_default();
-        right.extend([
-            Span::styled("   ✓ ", theme.accent),
-            Span::styled(format!("saved to {}", clean(&name)), theme.muted),
-        ]);
+        let saved = |text: String| {
+            vec![
+                Span::styled("   ✓ ", theme.accent),
+                Span::styled(text, theme.muted),
+            ]
+        };
+        vec![
+            saved(format!("saved to {}", clean(&name))),
+            saved("saved".into()),
+        ]
+    } else {
+        vec![Vec::new()]
+    };
+    let status = |position: Option<Span<'static>>, state: &[Span<'static>]| {
+        let mut spans: Vec<Span> = position.into_iter().collect();
+        spans.push(count.clone());
+        spans.extend(state.iter().cloned());
+        spans.push(Span::raw(" "));
+        spans
+    };
+    let mut choices: Vec<_> = position(app)
+        .map(|place| {
+            status(
+                Some(Span::styled(format!("{place}   "), theme.faint)),
+                &state[0],
+            )
+        })
+        .into_iter()
+        .collect();
+    choices.extend(state.iter().map(|state| status(None, state)));
+    // Cells left of `right`, less the leading space and a gap before it.
+    let room =
+        |right: &[Span]| usize::from(area.width).saturating_sub(1 + STATUS_GAP + width(right));
+    let (left, right) = match &app.notice {
+        Some(notice) => {
+            let (mark, style) = if notice.error {
+                ("✕ ", theme.error)
+            } else {
+                ("› ", theme.accent)
+            };
+            let text = clean(&notice.text);
+            // A notice says what just happened, so it keeps its room over the status.
+            let need = text_width(mark) + text_width(&text);
+            let right = choices
+                .into_iter()
+                .find(|right| need <= room(right))
+                .unwrap_or_default();
+            let text = fit(&text, room(&right).saturating_sub(text_width(mark)));
+            let text_style = if notice.error {
+                theme.error
+            } else {
+                Style::new()
+            };
+            (
+                vec![Span::styled(mark, style), Span::styled(text, text_style)],
+                right,
+            )
+        }
+        None => {
+            let pairs = hints(app);
+            // The most detailed status that leaves room for every hint; otherwise the
+            // shortest, with as many hints as fit. On the narrowest screens the last hint,
+            // the way out, takes the place of the status.
+            let right = match choices
+                .iter()
+                .position(|right| pairs_width(&pairs) <= room(right))
+            {
+                Some(i) => choices.swap_remove(i),
+                None => {
+                    let shortest = choices.pop().unwrap_or_default();
+                    let last = &pairs[pairs.len().saturating_sub(1)..];
+                    if pairs_width(last) <= room(&shortest) {
+                        shortest
+                    } else {
+                        Vec::new()
+                    }
+                }
+            };
+            (key_spans(&fit_hints(&pairs, room(&right)), theme), right)
+        }
+    };
+    let mut line = vec![Span::raw(" ")];
+    line.extend(left);
+    render_split(frame, area, line, right);
+}
+
+/// The cursor's line and how many lines its text has, as `5/21`, or `new 5/40` in a Git
+/// change. Rows without a line, such as hunk labels, have none, and so does the content
+/// while the comments list has the keys.
+fn position(app: &App) -> Option<String> {
+    let row = app
+        .rows
+        .get(app.cursor)
+        .filter(|_| app.focus == Focus::Content)?;
+    let (side, line) = row
+        .target
+        .or_else(|| row.lines.iter().rev().flatten().next().copied())?;
+    let place = match side {
+        Side::Source => line.to_string(),
+        side => format!("{side} {line}"),
+    };
+    // The disk side of a revision is no snapshot, so its length is unknown here.
+    let total = (app.view != View::Disk)
+        .then(|| app.current_file().snapshot(side))
+        .flatten()
+        .map(|snapshot| lines(&snapshot.text).len());
+    Some(match total {
+        Some(total) => format!("{place}/{total}"),
+        None => place,
+    })
+}
+
+/// As many hints as fit in `room` cells, in order, always keeping the last one: it is the
+/// way out of what the user is doing, or into the key list.
+fn fit_hints<'a>(pairs: &[(&'a str, &'a str)], room: usize) -> Vec<(&'a str, &'a str)> {
+    let Some((last, rest)) = pairs.split_last() else {
+        return Vec::new();
+    };
+    let mut shown: Vec<_> = rest.to_vec();
+    while !shown.is_empty() && pairs_width(&[shown.as_slice(), &[*last]].concat()) > room {
+        shown.pop();
     }
-    right.push(Span::raw(" "));
-    // A notice says what just happened, so it keeps its room over the status.
-    if app.notice.is_some() && width(&left) + width(&right) > usize::from(area.width) {
-        right.clear();
+    shown.push(*last);
+    if pairs_width(&shown) > room {
+        shown.clear();
     }
-    render_split(frame, area, left, right);
+    shown
 }
 
 /// The most useful keys for what the user is doing now.
@@ -1003,7 +1226,7 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
         Some(Prompt::Draft(_)) => {
             return vec![
                 ("ctrl+s", "record"),
-                ("enter", "newline"),
+                ("enter", "new line"),
                 ("esc", "cancel"),
             ];
         }
@@ -1016,13 +1239,14 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     }
     if app.focus == Focus::Comments {
         return if app.session.comments().is_empty() {
-            vec![("tab", "back")]
+            vec![("a", "close")]
         } else {
             vec![
+                ("j k", "choose"),
                 ("enter", "go to"),
                 ("e", "edit"),
                 ("d", "delete"),
-                ("tab", "back"),
+                ("a", "close"),
             ]
         };
     }
@@ -1036,20 +1260,30 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     if app.current_file().is_diff() {
         keys.push(("b", "view"));
     }
-    keys.extend([("tab", "comments"), ("s", "save"), ("?", "keys")]);
+    keys.extend([("a", "all comments"), ("s", "save"), ("?", "keys")]);
     keys
 }
 
+/// Keys and their labels on one line.
 fn key_spans(pairs: &[(&str, &str)], theme: &Theme) -> Vec<Span<'static>> {
-    pairs
+    let mut spans = Vec::new();
+    for (i, (key, label)) in pairs.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" ".repeat(KEY_GAP)));
+        }
+        spans.push(Span::raw(key.to_string()));
+        spans.push(Span::styled(format!(" {label}"), theme.muted));
+    }
+    spans
+}
+
+/// Cells that `pairs` take on one line.
+fn pairs_width(pairs: &[(&str, &str)]) -> usize {
+    let text: usize = pairs
         .iter()
-        .flat_map(|(key, label)| {
-            [
-                Span::raw(key.to_string()),
-                Span::styled(format!(" {label}    "), theme.muted),
-            ]
-        })
-        .collect()
+        .map(|(key, label)| text_width(key) + 1 + text_width(label))
+        .sum();
+    text + KEY_GAP * pairs.len().saturating_sub(1)
 }
 
 /// Draws `left` and right-aligned `right` on one line; `right` wins when space runs out.
@@ -1194,6 +1428,8 @@ mod tests {
             let end = cursor(&mut app, KeyCode::End);
             let before = cursor(&mut app, KeyCode::Left);
             assert_ne!(end, before, "{n} characters");
+            // Written text takes a second Esc to discard.
+            cursor(&mut app, KeyCode::Esc);
             cursor(&mut app, KeyCode::Esc);
         }
     }
@@ -1239,6 +1475,7 @@ mod tests {
 
     #[test]
     fn notices_keep_their_text_on_narrow_screens() {
+        use super::super::app::Notice;
         use crate::session::Session;
         use ratatui::{Terminal, backend::TestBackend};
         let dir = tempfile::tempdir().unwrap();
@@ -1258,6 +1495,134 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let footer: String = (0..32).map(|x| buffer[(x, 7)].symbol()).collect();
         assert!(footer.contains("Cannot save feedback"), "{footer}");
+    }
+
+    /// Lines of the screen drawn at `width` by `height`.
+    fn screen_text(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        use ratatui::{Terminal, backend::TestBackend};
+        let theme = Theme::new([200; 3], [20; 3], true);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| render(frame, app, &theme)).unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| (0..width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn the_key_line_shows_whole_hints_apart_from_the_status() {
+        use crate::session::Session;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "text\n").unwrap();
+        let session =
+            Session::open(&[dir.path().join("a.md")], dir.path().join("out.json")).unwrap();
+        let mut app = App::new(session);
+        let labels = ["select", "comment", "all", "comments", "save", "keys"];
+        for width in 20..=100 {
+            let footer = screen_text(&mut app, width, 8).pop().unwrap();
+            let footer = footer.trim();
+            // Every word is a whole label or status word, and the status stays apart.
+            for word in footer.split_whitespace() {
+                let known =
+                    word.len() == 1 || labels.contains(&word) || ["no", "1/1"].contains(&word);
+                assert!(known, "{width} cells: {footer:?}");
+            }
+            // Only on the narrowest screens does the way into the key list take the place
+            // of the status.
+            assert!(
+                footer.ends_with("no comments") || footer == "? keys",
+                "{width} cells: {footer:?}"
+            );
+            // The way into the key list stays.
+            assert!(
+                width < 30 || footer.starts_with("? keys") || footer.contains("    ? keys"),
+                "{width} cells: {footer:?}"
+            );
+            assert!(!footer.contains("keys1/1"), "{width} cells: {footer:?}");
+        }
+        // With room, every hint and the cursor position show.
+        let wide = screen_text(&mut app, 100, 8).pop().unwrap();
+        assert!(
+            wide.contains("? keys") && wide.contains("1/1   no comments"),
+            "{wide:?}"
+        );
+    }
+
+    #[test]
+    fn the_position_names_the_line_and_its_side() {
+        use crate::{
+            feedback::{Feedback, ReviewFile, Snapshot},
+            session::Session,
+        };
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let file = ReviewFile::new(
+            "note.txt".into(),
+            vec![
+                Snapshot::new(Side::Old, "base", "context\nold\n".into()),
+                Snapshot::new(Side::New, "working tree", "context\nnew\n".into()),
+            ],
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let feedback = Feedback::new(std::path::Path::new("/"), vec![file]);
+        let session = Session::new(feedback, None, dir.path().join("out.json")).unwrap();
+        let mut app = App::new(session);
+        // Rows: hunk label, context line 1, deleted old line 2, added new line 2.
+        let footer = |app: &mut App| screen_text(app, 120, 10).pop().unwrap();
+        assert!(footer(&mut app).contains("new 1/2   no comments"));
+        app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+        assert!(footer(&mut app).contains("old 2/2   no comments"));
+        app.handle_key(KeyEvent::from(KeyCode::Char('g')));
+        assert!(footer(&mut app).trim_end().ends_with("no comments"));
+        assert!(!footer(&mut app).contains('/'), "a hunk label has no line");
+    }
+
+    #[test]
+    fn the_way_out_outlasts_the_status() {
+        use crate::session::Session;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "text\n").unwrap();
+        let session =
+            Session::open(&[dir.path().join("a.md")], dir.path().join("out.json")).unwrap();
+        let mut app = App::new(session);
+        // Unsaved feedback makes the status long; a draft's last hint is the way out.
+        app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+        app.paste("recorded");
+        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::from(KeyCode::Char('x')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+        for width in 14..=40 {
+            let footer = screen_text(&mut app, width, 12).pop().unwrap();
+            assert!(footer.contains("esc cancel"), "{width} cells: {footer:?}");
+        }
+    }
+
+    #[test]
+    fn the_key_reference_shows_every_key_on_a_standard_terminal() {
+        use crate::session::Session;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "text\n").unwrap();
+        let session =
+            Session::open(&[dir.path().join("a.md")], dir.path().join("out.json")).unwrap();
+        let mut app = App::new(session);
+        app.handle_key(KeyEvent::from(KeyCode::Char('?')));
+        for width in [60, 80, 120] {
+            let screen = screen_text(&mut app, width, 30).join("\n");
+            for (_, pairs) in KEYS {
+                for (key, label) in pairs {
+                    assert!(screen.contains(label), "{width}: {label}\n{screen}");
+                    assert!(screen.contains(key), "{width}: {key}\n{screen}");
+                }
+            }
+            assert!(screen.contains("out.json"), "{screen}");
+        }
+        let shape = |width| {
+            let grid = KeyGrid::new(width);
+            (grid.columns, grid.groups)
+        };
+        // Three columns and a feedback line on 80 columns; aligned pairs on 60; one row on 120.
+        assert_eq!([shape(76), shape(56), shape(116)], [(3, 3), (2, 4), (4, 4)]);
     }
 
     fn strings(texts: &[&str]) -> Vec<String> {

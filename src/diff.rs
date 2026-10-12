@@ -95,7 +95,7 @@ pub fn diff(old: &str, new: &str) -> Vec<DiffRow> {
     rows
 }
 
-/// The lines a hunk covers, on the new side when it has any: "lines 6–20" or "line 6".
+/// The lines a hunk covers, on the new side when it has any: "lines 6-20" or "line 6".
 fn hunk_label(rows: &[DiffRow]) -> String {
     let span = |number: fn(&DiffRow) -> Option<usize>| {
         let mut numbers = rows.iter().filter_map(number);
@@ -103,7 +103,7 @@ fn hunk_label(rows: &[DiffRow]) -> String {
         Some((first, numbers.next_back().unwrap_or(first)))
     };
     match span(|r| r.new_line).or_else(|| span(|r| r.old_line)) {
-        Some((first, last)) if first < last => format!("lines {first}–{last}"),
+        Some((first, last)) if first < last => format!("lines {first}-{last}"),
         Some((first, _)) => format!("line {first}"),
         None => String::new(),
     }
@@ -218,7 +218,7 @@ mod tests {
         assert_eq!(
             rows("a\rb\nold", "a\rb\nnew\n"),
             vec![
-                (DiffKind::Hunk, "lines 1–2".into(), None, None),
+                (DiffKind::Hunk, "lines 1-2".into(), None, None),
                 (DiffKind::Context, "a\rb".into(), Some(1), Some(1)),
                 (DiffKind::Delete, "old".into(), Some(2), None),
                 (
@@ -231,7 +231,7 @@ mod tests {
             ]
         );
         assert_eq!(rows("", "x\n")[0].1, "line 1");
-        assert_eq!(rows("a\nb\n", "")[0].1, "lines 1–2");
+        assert_eq!(rows("a\nb\n", "")[0].1, "lines 1-2");
         // Replaced lines carry the words that changed.
         let replaced = diff("let total = 0;\n", "let total: u64 = 0;\n");
         assert_eq!(
