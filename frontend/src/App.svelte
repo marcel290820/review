@@ -33,7 +33,7 @@
 
   /** The most useful keys for what is happening now. */
   const hints = $derived.by((): [string, string][] => {
-    if (review.draft) return [['ctrl+enter', 'record'], ['enter', 'new line'], ['esc', 'cancel']];
+    if (review.draft) return [['enter', 'record'], ['shift+enter', 'new line'], ['esc', 'cancel']];
     if (review.card === 'keys') return [['?', 'close']];
     if (review.card === 'comments') {
       return review.comments.length

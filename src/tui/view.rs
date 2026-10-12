@@ -67,7 +67,7 @@ const KEYS: [(&str, &[(&str, &str)]); 4] = [
     (
         "feedback",
         &[
-            ("ctrl+s", "record comment"),
+            ("enter", "record comment"),
             ("s", "save"),
             ("q", "quit"),
             ("?", "close"),
@@ -1225,8 +1225,8 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
     match &app.prompt {
         Some(Prompt::Draft(_)) => {
             return vec![
-                ("ctrl+s", "record"),
-                ("enter", "new line"),
+                ("enter", "record"),
+                ("shift+enter", "new line"),
                 ("esc", "cancel"),
             ];
         }
@@ -1319,7 +1319,7 @@ mod tests {
         use ratatui::{
             Terminal,
             backend::TestBackend,
-            crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
+            crossterm::event::{KeyCode, KeyEvent},
         };
         let dir = tempfile::tempdir().unwrap();
         let text: String = (1..=40).map(|n| format!("- line **{n}**\n")).collect();
@@ -1342,7 +1342,7 @@ mod tests {
         let states = ["", "\x13", "\t", "\t?"];
         for keys in states {
             if keys == "\x13" {
-                app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+                app.handle_key(KeyEvent::from(KeyCode::Enter));
             } else {
                 press(&mut app, keys);
             }
@@ -1440,7 +1440,7 @@ mod tests {
         use ratatui::{
             Terminal,
             backend::TestBackend,
-            crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
+            crossterm::event::{KeyCode, KeyEvent},
         };
         let dir = tempfile::tempdir().unwrap();
         let text: String = (1..=40).map(|n| format!("line {n}\n")).collect();
@@ -1464,7 +1464,7 @@ mod tests {
             app.handle_key(KeyEvent::from(code));
         }
         app.paste("first thought");
-        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert!(threads(&screen(&mut app), "first thought"));
         app.handle_key(KeyEvent::from(KeyCode::Char('c')));
         app.paste("second thought");
@@ -1579,7 +1579,7 @@ mod tests {
     #[test]
     fn the_way_out_outlasts_the_status() {
         use crate::session::Session;
-        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.md"), "text\n").unwrap();
         let session =
@@ -1588,7 +1588,7 @@ mod tests {
         // Unsaved feedback makes the status long; a draft's last hint is the way out.
         app.handle_key(KeyEvent::from(KeyCode::Char('c')));
         app.paste("recorded");
-        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
         app.handle_key(KeyEvent::from(KeyCode::Char('x')));
         app.handle_key(KeyEvent::from(KeyCode::Char('c')));
         for width in 14..=40 {

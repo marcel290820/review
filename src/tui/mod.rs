@@ -12,8 +12,12 @@ use app::App;
 use ratatui::{
     DefaultTerminal,
     crossterm::{
-        event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind},
+        event::{
+            self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyEventKind,
+            KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        },
         execute,
+        terminal::supports_keyboard_enhancement,
     },
 };
 use std::{
@@ -30,8 +34,16 @@ pub fn run(session: Session) -> Result<()> {
     let theme = Theme::detect();
     let mut app = App::new(session);
     let mut terminal = ratatui::try_init()?;
-    let restore = RestoreTerminal;
+    // Terminals with the kitty keyboard protocol report Shift+Enter, which starts a new line.
+    let enhanced = supports_keyboard_enhancement().unwrap_or(false);
+    let restore = RestoreTerminal { enhanced };
     execute!(io::stdout(), EnableBracketedPaste)?;
+    if enhanced {
+        execute!(
+            io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+    }
     let result = event_loop(&mut terminal, &mut app, &theme);
     drop(restore);
     result?;
@@ -69,10 +81,17 @@ fn event_loop(terminal: &mut DefaultTerminal, app: &mut App, theme: &Theme) -> R
 }
 
 /// Restores the terminal when the interface ends, including after an error.
-struct RestoreTerminal;
+struct RestoreTerminal {
+    enhanced: bool,
+}
 
 impl Drop for RestoreTerminal {
     fn drop(&mut self) {
+        if self.enhanced
+            && let Err(e) = execute!(io::stdout(), PopKeyboardEnhancementFlags)
+        {
+            eprintln!("Cannot restore the keyboard mode: {e}");
+        }
         if let Err(e) = execute!(io::stdout(), DisableBracketedPaste) {
             eprintln!("Cannot disable bracketed paste: {e}");
         }

@@ -13,7 +13,7 @@
       [['v', 'select lines'], ['c', 'comment'], ['esc', 'clear, cancel'], ['a', 'all comments'], ['enter', 'go to comment'], ['e d', 'edit, delete']],
     ],
     ['view', [['[ ]', 'previous, next file'], ['b', 'diff, old, new, preview'], ['o n', 'context on old, new'], ['r', 'changes on disk']]],
-    ['feedback', [['ctrl+enter', 'record comment'], ['s', 'save'], ['?', 'close']]],
+    ['feedback', [['enter', 'record comment'], ['s', 'save'], ['?', 'close']]],
   ];
 
   /** Comments under their files, in reading order. */

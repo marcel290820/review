@@ -26,9 +26,15 @@
     textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
   });
 
+  // Enter records, as in chat, and Shift+Enter starts a new line. On touch screens Enter
+  // starts a new line and the button records.
+  const touch = matchMedia('(hover: none)');
+
   function onkeydown(event: KeyboardEvent) {
-    const command = event.ctrlKey || event.metaKey;
-    if (command && (event.key === 'Enter' || event.key === 's')) {
+    // Safari ends an IME composition with an Enter that reports keyCode 229 but not isComposing.
+    const composing = event.isComposing || event.keyCode === 229;
+    const plain = !(event.shiftKey || event.altKey || event.ctrlKey || event.metaKey || composing);
+    if (event.key === 'Enter' && plain && !touch.matches) {
       event.preventDefault();
       void review.record();
     } else if (event.key === 'Escape') {

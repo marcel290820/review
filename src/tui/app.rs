@@ -222,9 +222,19 @@ impl App {
                     self.say("Press esc again to discard this draft.");
                 }
                 KeyCode::Esc => self.prompt = None,
-                KeyCode::Char('s') if control => {
+                // Enter records, as in chat; Shift+Enter (where the terminal reports it),
+                // Alt+Enter, and Ctrl+J start a new line.
+                KeyCode::Enter
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT) =>
+                {
                     draft.discarding = false;
                     self.record()?;
+                }
+                KeyCode::Char('j') if control => {
+                    draft.discarding = false;
+                    draft.editor.insert("\n");
                 }
                 _ => {
                     draft.discarding = false;
@@ -700,7 +710,7 @@ mod tests {
     fn record(app: &mut App, body: &str) {
         press(app, &[KeyCode::Char('c')]);
         app.paste(body);
-        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
     }
 
     #[test]
@@ -770,7 +780,7 @@ mod tests {
             ],
         );
         app.paste("old side");
-        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
         let target = &app.session.comments()[0].target;
         assert_eq!(
             (target.side, target.quote.as_str()),
@@ -802,6 +812,25 @@ mod tests {
             &[KeyCode::Char('k'), KeyCode::Char('d'), KeyCode::Char('y')],
         );
         assert_eq!(app.session.comments()[app.comment].body, "third");
+    }
+
+    #[test]
+    fn enter_records_and_shift_alt_or_ctrl_j_start_a_new_line() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("a.md"), "text\n").unwrap();
+        let session =
+            Session::open(&[dir.path().join("a.md")], dir.path().join("out.json")).unwrap();
+        let mut app = App::new(session);
+        press(&mut app, &[KeyCode::Char('c')]);
+        app.paste("one");
+        for modifiers in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
+            app.handle_key(KeyEvent::new(KeyCode::Enter, modifiers));
+        }
+        app.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+        app.paste("two");
+        press(&mut app, &[KeyCode::Enter]);
+        assert!(app.prompt.is_none());
+        assert_eq!(app.session.comments()[0].body, "one\n\n\ntwo");
     }
 
     #[test]
@@ -929,7 +958,7 @@ mod tests {
         // Longer than a comment may be, so recording fails.
         app.paste(&"x".repeat(40 << 10));
         press(&mut app, &[KeyCode::Esc]);
-        app.handle_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
         assert!(app.notice.as_ref().is_some_and(|n| n.error));
         press(&mut app, &[KeyCode::Esc]);
         assert!(

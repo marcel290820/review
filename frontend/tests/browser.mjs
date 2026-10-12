@@ -124,9 +124,19 @@ try {
   await page.keyboard.press('v'); await page.keyboard.press('j');
   await page.keyboard.press('c');
   await expect(page.locator('.composer-title')).toHaveText('plan.md:3-4');
-  await page.keyboard.type('Keyboard range');
-  await page.keyboard.press('Control+Enter');
+  // Enter records and Shift+Enter starts a new line, as in chat.
+  await page.keyboard.type('Keyboard'); await page.keyboard.press('Shift+Enter'); await page.keyboard.type('range');
+  // An Enter that ends an IME composition, as Safari reports it, leaves the draft open.
+  await page.getByLabel('Comment', { exact: true }).evaluate(area => {
+    const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'keyCode', { get: () => 229 });
+    area.dispatchEvent(event);
+  });
+  await page.waitForTimeout(300);
+  await expect(page.locator('.composer')).toHaveCount(1);
+  await page.keyboard.press('Enter');
   await expect(page.getByRole('status')).toContainText('Comment recorded');
+  assert.ok((await s.state()).comments.some(c => c.body === 'Keyboard\nrange'), 'Shift+Enter starts a new line');
   await page.keyboard.press('a');
   await expect(page.locator('.listed')).toHaveCount(2);
   await page.keyboard.press('j'); await page.keyboard.press('d');
