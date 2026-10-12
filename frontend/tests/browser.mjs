@@ -196,6 +196,8 @@ try {
   await p.keyboard.press('a');
   await p.getByRole('button', { name: 'changed on disk' }).click();
   await expect(p.locator('main')).toContainText('Inserted line');
+  // Comments hang beside the changes on disk, beneath the lines they were written on.
+  await expect(p.locator('main .comment', { hasText: 'edited in TUI' })).toHaveCount(1);
   await p.keyboard.press('c');
   await expect(p.locator('.composer')).toHaveCount(0);
   await p.getByRole('button', { name: 'back to review' }).click();

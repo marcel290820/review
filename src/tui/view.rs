@@ -355,17 +355,17 @@ fn render_content(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
     };
     let (from, to) = app.selection();
     let adding = draft.is_some_and(|d| d.editing().is_none());
-    // Comments stay with their reviewed snapshots, so a disk revision shows none.
-    let comments: Vec<_> = if app.view == View::Disk {
-        Vec::new()
-    } else {
-        app.session
-            .comments()
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| &c.target.file_id == file_id)
-            .collect()
-    };
+    // On disk, the reviewed text is the old side of the diff against the revision, so its
+    // comments hang beside what changed; comments on a Git diff's old side have no place there.
+    let disk = app.view == View::Disk;
+    let here = |side: Side| if disk { Side::Old } else { side };
+    let comments: Vec<_> = app
+        .session
+        .comments()
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| &c.target.file_id == file_id && !(disk && c.target.side == Side::Old))
+        .collect();
     let height = usize::from(area.height);
     // ponytail: comments are not counted when deciding to scroll, so a short file whose
     // comments overflow the screen gets no overview rail.
@@ -382,7 +382,7 @@ fn render_content(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         let lines = app.rows[i].lines;
         let mut notes: Vec<(&str, Note)> = comments
             .iter()
-            .filter(|(_, c)| lines.contains(&Some((c.target.side, c.target.end_line))))
+            .filter(|(_, c)| lines.contains(&Some((here(c.target.side), c.target.end_line))))
             .map(|(index, c)| match draft {
                 Some(d) if d.editing() == Some(c.id.as_str()) => (d.editor.text(), Note::Chosen),
                 _ if app.focus == Focus::Comments && *index == app.comment => {
@@ -433,7 +433,7 @@ fn render_content(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         row.lines
             .iter()
             .flatten()
-            .any(|&(side, n)| side == t.side && (t.start_line..=t.end_line).contains(&n))
+            .any(|&(side, n)| side == here(t.side) && (t.start_line..=t.end_line).contains(&n))
     };
     // While the list is open, the chosen comment's lines show as selected.
     let chosen = comments
@@ -504,7 +504,7 @@ fn render_content(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         }
         let ends: HashSet<_> = comments
             .iter()
-            .map(|(_, c)| (c.target.side, c.target.end_line))
+            .map(|(_, c)| (here(c.target.side), c.target.end_line))
             .collect();
         for (i, row) in app.rows.iter().enumerate() {
             if row.lines.iter().flatten().any(|line| ends.contains(line)) {
@@ -1574,6 +1574,29 @@ mod tests {
         app.handle_key(KeyEvent::from(KeyCode::Char('g')));
         assert!(footer(&mut app).trim_end().ends_with("no comments"));
         assert!(!footer(&mut app).contains('/'), "a hunk label has no line");
+    }
+
+    #[test]
+    fn changes_on_disk_show_the_comments_beside_them() {
+        use crate::session::Session;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.md");
+        std::fs::write(&path, "keep\nold step\nkeep\n").unwrap();
+        let session =
+            Session::open(std::slice::from_ref(&path), dir.path().join("out.json")).unwrap();
+        let mut app = App::new(session);
+        app.handle_key(KeyEvent::from(KeyCode::Char('j')));
+        app.handle_key(KeyEvent::from(KeyCode::Char('c')));
+        app.paste("Rename this step");
+        app.handle_key(KeyEvent::from(KeyCode::Enter));
+        // The agent rewrites the line; the comment hangs beneath the line it replaced.
+        std::fs::write(&path, "keep\nnew step\nkeep\n").unwrap();
+        app.handle_key(KeyEvent::from(KeyCode::Char('r')));
+        let screen = screen_text(&mut app, 80, 12);
+        let at = |text: &str| screen.iter().position(|l| l.contains(text));
+        let (old, note, new) = (at("old step"), at("Rename this step"), at("new step"));
+        assert!(old < note && note < new, "{screen:#?}");
     }
 
     #[test]

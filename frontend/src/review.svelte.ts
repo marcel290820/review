@@ -147,15 +147,20 @@ class Review {
   threads = $derived.by(() => {
     const threads = new Map<number, Comment[]>();
     const covered = new Set<number>();
-    if (this.view === 'disk') return { threads, covered };
+    // On disk, the reviewed text is the old side of the diff against the revision, so its
+    // comments hang beside what changed; comments on a Git diff's old side have no place there.
+    const disk = new Map<number, number>();
+    if (this.view === 'disk') this.rows.forEach((row, i) => row.places[0] && disk.set(row.places[0].line, i));
+    const rowOf = (side: string, line: number) =>
+      this.view !== 'disk' ? this.rowOf.get(`${side}:${line}`) : side === 'old' ? undefined : disk.get(line);
     for (const comment of this.inReadingOrder) {
       const t = comment.target;
       if (t.file_id !== this.file?.id) continue;
-      const end = this.rowOf.get(`${t.side}:${t.end_line}`);
+      const end = rowOf(t.side, t.end_line);
       if (end === undefined) continue;
       threads.set(end, [...(threads.get(end) ?? []), comment]);
       for (let line = t.start_line; line <= t.end_line; line++) {
-        const row = this.rowOf.get(`${t.side}:${line}`);
+        const row = rowOf(t.side, line);
         if (row !== undefined) covered.add(row);
       }
     }

@@ -37,7 +37,7 @@ review --reopen examples/feedback.json --root examples
 
 Reopening without `--root` reads only the saved snapshots. Review never follows the `source_root_hint` in imported JSON. Paths in feedback are relative to the original invocation directory when it contains all selected files, otherwise to their common parent. Use that directory as `--root` after revision; the hint helps identify it. Moving feedback does not change its meaning.
 
-Both interfaces check disk revisions periodically. Inspect revisions shows additions and deletions against the reviewed source or new diff side. Missing, inaccessible, and changed files are explicit states. Revision views are read-only: comments stay attached to their original snapshots, and content changes never resolve a concern. Open the revised files as a new review to comment on them.
+Both interfaces check disk revisions periodically. Inspect revisions shows additions and deletions against the reviewed source or new diff side. Missing, inaccessible, and changed files are explicit states. Revision views are read-only. Comments hang beneath the reviewed lines they target wherever the revision view shows those lines, so a rewritten passage shows its comment right above the replacement. They stay attached to their original snapshots, and content changes never resolve a concern. Open the revised files as a new review to comment on them.
 
 ## Terminal controls
 
