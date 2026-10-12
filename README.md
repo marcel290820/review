@@ -4,12 +4,14 @@
 
 Your agent wrote a plan, a spec, or a diff. Open it in the terminal or browser, pin comments to exact lines, and save them as one JSON file the agent can act on. No account, no server, no editor plugin.
 
-![Reviewing an agent's plan in the terminal, saving feedback, and handing it back](docs/media/demo.gif)
+![Reviewing an agent's plan in the terminal, saving feedback, and handing it back](docs/media/tui.gif)
 
 - **Terminal or browser.** A keyboard-first TUI by default, `--browser` for pointer selection and a Markdown preview. Both save the same feedback.
 - **Precise targets.** Each comment carries the file, line range, byte offsets, the exact quoted text, and surrounding context, so an agent can find the spot even after the file moves around.
 - **Git-aware.** Review the working tree, the index, or any two commits, and comment on either side of the diff.
 - **One local binary.** Rust, with the browser UI embedded. Nothing leaves your machine, and Review never edits your files.
+
+![The same review in the browser: a line, a dragged passage, a range, the Markdown preview, and saving](docs/media/browser.gif)
 
 ## Install
 
@@ -57,7 +59,7 @@ For each entry in `comments`:
 Address every comment, then list each one with what you did, or why you did not.
 ```
 
-When the agent is done, run `review --reopen review-feedback.json --root .` to check its revisions against your comments, then open the revised files for the next round.
+When the agent is done, run `review --reopen review-feedback.json --root .` and press `r` to see what changed on disk, with each comment beside the lines it was about. Then open the revised files for the next round.
 
 ## Docs
 

@@ -42,6 +42,14 @@ LD_LIBRARY_PATH=/tmp/review-browser-deps-local/lib/usr/lib/x86_64-linux-gnu REVI
 
 Set `REVIEW_BIN=/absolute/path/to/review` to run `npm run test:browser` or `python3 tests/tui_smoke.py` against a different build. `PLAYWRIGHT_BROWSERS_PATH` can place test browser downloads under `/tmp`. The browser suite drives real pointer and keyboard interactions, follows browser → TUI → browser feedback, verifies revision inspection, old/new targets, offline assets, safe Markdown, edits from several tabs, and save failures. It writes a screenshot to `/tmp/review-artifacts/browser.png`.
 
+The README's demos are recorded from the real interfaces and need tmux, jq, [gifski](https://gif.ski), and the browser setup above:
+
+```sh
+cargo build --locked --release
+python3 docs/media/record-tui.py target/release/review     # docs/media/tui.gif
+node docs/media/record-browser.mjs target/release/review   # docs/media/browser.gif
+```
+
 See [verification.md](verification.md) for the completed local checks and their limits.
 
 The design docs record why Review looks the way it does: [vision](vision.md), [rationale](rationale.md), and [architecture](architecture.md).
