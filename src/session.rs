@@ -6,7 +6,7 @@ use crate::{
         Comment, Feedback, MAX_COMMENTS, MAX_FEEDBACK, MAX_FILES, ReviewFile, Side, Snapshot,
         check_body, new_id, now,
     },
-    files::{read_below, read_bounded, read_text, save_new},
+    files::{Held, is_save_of, read_below, read_held, read_text, replace_held, save_new},
 };
 use anyhow::{Context, Result, ensure};
 use serde::Serialize;
@@ -66,6 +66,9 @@ pub struct Session {
     output: PathBuf,
     dirty: bool,
     last_saved: Option<PathBuf>,
+    /// The feedback file later saves replace, as this session last saw it: a file this
+    /// session saved, or reopened feedback at the save destination.
+    own: Option<(PathBuf, Held)>,
 }
 
 impl Session {
@@ -102,10 +105,15 @@ impl Session {
     /// Reopens saved feedback. Revisions are read only below an explicit `root`;
     /// the document's own `source_root_hint` is never trusted for disk access.
     pub fn reopen(feedback: &Path, root: Option<PathBuf>, output: PathBuf) -> Result<Self> {
-        let document = serde_json::from_slice(&read_bounded(feedback, MAX_FEEDBACK)?)
+        let (bytes, held) = read_held(feedback, MAX_FEEDBACK)?;
+        let document = serde_json::from_slice(&bytes)
             .with_context(|| format!("{} is not valid feedback JSON", feedback.display()))?;
         let mut session = Self::new(document, root, output)?;
-        session.last_saved = Some(path::absolute(feedback)?);
+        let path = path::absolute(feedback)?;
+        if is_save_of(&path, &session.output) {
+            session.own = Some((path.clone(), held));
+        }
+        session.last_saved = Some(path);
         Ok(session)
     }
 
@@ -147,6 +155,7 @@ impl Session {
             output: path::absolute(output)?,
             dirty: false,
             last_saved: None,
+            own: None,
         };
         session.refresh();
         Ok(session)
@@ -243,25 +252,33 @@ impl Session {
         Ok(())
     }
 
-    /// Writes the feedback to a new file and returns its path. On failure the
-    /// session keeps its unsaved state.
+    /// Writes the feedback and returns its path: the first save to a new file, later saves
+    /// over it while it still holds what this session last saw there. A file replaced,
+    /// changed, or turned into a symlink since is left alone and the save takes a new file.
+    /// On failure the session keeps its unsaved state.
     pub fn save(&mut self) -> Result<PathBuf> {
         let previous = mem::replace(&mut self.feedback.saved_at, now());
-        let path = self
+        let (path, written) = self
             .publish()
             .inspect_err(|_| self.feedback.saved_at = previous)?;
         self.dirty = false;
         self.last_saved = Some(path.clone());
+        self.own = Some((path.clone(), written));
         Ok(path)
     }
 
-    fn publish(&self) -> Result<PathBuf> {
+    fn publish(&self) -> Result<(PathBuf, Held)> {
         let mut data = serde_json::to_vec_pretty(&self.feedback)?;
         data.push(b'\n');
         ensure!(
             data.len() <= MAX_FEEDBACK,
             "Feedback exceeds the 64 MiB limit"
         );
+        if let Some((path, held)) = &self.own
+            && let Some(now) = replace_held(path, *held, &data)?
+        {
+            return Ok((path.clone(), now));
+        }
         save_new(&self.output, &data)
     }
 

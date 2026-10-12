@@ -6,7 +6,7 @@ The code is organized as one library with two interfaces:
 | --- | --- |
 | `src/feedback.rs` | The saved format, coordinate convention, target construction, and validation |
 | `src/session.rs` | One review in memory: comment changes, unsaved state, saving, disk revisions |
-| `src/files.rs` | Bounded text reads, symlink-free reads below a root, saves that never replace files |
+| `src/files.rs` | Bounded text reads, symlink-free reads below a root, saves that replace only the session's own file |
 | `src/diff.rs` | Unified diff rows numbered like comment targets, with changed words and hunk labels |
 | `src/markdown.rs` | Markdown styling marks for source lines and inert preview HTML, for both interfaces |
 | `src/git.rs` | Review content from read-only Git commands |

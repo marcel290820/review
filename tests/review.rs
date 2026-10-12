@@ -74,9 +74,21 @@ fn complete_loop_preserves_snapshot_context_and_saves_versions() {
             .any(|row| row.kind == DiffKind::Add && row.text == "Inserted line")
     );
 
+    // Reopened at its output path, the feedback is this session's file, so saving updates it.
+    reopened.edit_comment(&id, "Revised again".into()).unwrap();
     let second = reopened.save().unwrap();
-    assert_ne!(second, saved);
-    assert_eq!(fs::read(&saved).unwrap(), saved_bytes);
+    assert_eq!(second, saved);
+    assert_ne!(fs::read(&saved).unwrap(), saved_bytes);
+    // Another session leaves that file alone: its first save takes a new name, and later
+    // saves update only that.
+    let updated = fs::read(&saved).unwrap();
+    let mut other = open_note(&dir, dir.path().join("feedback.json"));
+    comment_line(&mut other, 1, "Other");
+    let own = other.save().unwrap();
+    assert_eq!(own, dir.path().join("feedback.json.1.json"));
+    comment_line(&mut other, 2, "More");
+    assert_eq!(other.save().unwrap(), own);
+    assert_eq!(fs::read(&saved).unwrap(), updated);
     reopened.delete_comment(&id).unwrap();
     assert!(reopened.comments().is_empty());
 
@@ -121,6 +133,111 @@ fn rejects_corrupt_unknown_or_misidentified_feedback() {
     assert!(session.edit_comment("nonexistent", "x".into()).is_err());
     assert!(session.edit_comment(&id, "  ".into()).is_err());
     assert!(session.delete_comment("nonexistent").is_err());
+}
+
+#[test]
+fn later_saves_leave_changed_files_and_symlinks_alone() {
+    let (dir, mut session) = open("alpha\nbeta\n");
+    comment_line(&mut session, 1, "First");
+    let saved = session.save().unwrap();
+    // Something else rewrites the saved file: the next save takes a new name.
+    fs::write(&saved, "unrelated").unwrap();
+    comment_line(&mut session, 2, "Second");
+    let next = session.save().unwrap();
+    assert_ne!(next, saved);
+    assert_eq!(fs::read_to_string(&saved).unwrap(), "unrelated");
+    // The new file is the session's own now, and the next save updates it.
+    comment_line(&mut session, 2, "Third");
+    assert_eq!(session.save().unwrap(), next);
+
+    #[cfg(unix)]
+    {
+        // Feedback reopened through a symlink at the save destination keeps the symlink.
+        let link = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&next, &link).unwrap();
+        let mut reopened = Session::reopen(&link, None, link.clone()).unwrap();
+        let id = reopened.comments()[0].id.clone();
+        reopened.edit_comment(&id, "Edited".into()).unwrap();
+        let written = reopened.save().unwrap();
+        assert_ne!(written, link);
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        // A different file with the same bytes is not the session's file either.
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+        let own = session.save().unwrap();
+        let copy = dir.path().join("copy");
+        fs::copy(&own, &copy).unwrap();
+        fs::rename(&copy, &own).unwrap();
+        let replacement = fs::metadata(&own).unwrap().ino();
+        comment_line(&mut session, 2, "Same bytes");
+        assert_ne!(session.save().unwrap(), own);
+        assert_eq!(fs::metadata(&own).unwrap().ino(), replacement);
+
+        // A FIFO in place of the saved file neither blocks the save nor gets replaced.
+        let own = session.save().unwrap();
+        fs::remove_file(&own).unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(&own)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        comment_line(&mut session, 1, "Fourth");
+        assert_ne!(session.save().unwrap(), own);
+        assert!(fs::symlink_metadata(&own).unwrap().file_type().is_fifo());
+    }
+    let leftovers = fs::read_dir(dir.path())
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with('.')
+        })
+        .count();
+    assert_eq!(leftovers, 0, "unused temporary files are cleaned up");
+}
+
+#[test]
+fn sessions_saving_one_file_never_lose_a_save() {
+    let (dir, mut session) = open("alpha\nbeta\n");
+    comment_line(&mut session, 1, "First");
+    let shared = session.save().unwrap();
+    // Each session reopens the same feedback and saves its own edit at the same moment.
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let threads: Vec<_> = (0..8)
+        .map(|n| {
+            let (shared, barrier) = (shared.clone(), barrier.clone());
+            std::thread::spawn(move || {
+                let mut reopened = Session::reopen(&shared, None, shared.clone()).unwrap();
+                let id = reopened.comments()[0].id.clone();
+                reopened.edit_comment(&id, format!("edit {n}")).unwrap();
+                barrier.wait();
+                reopened.save().unwrap()
+            })
+        })
+        .collect();
+    let saved: HashSet<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    assert_eq!(
+        saved.len(),
+        8,
+        "one session updates the file, the others take new names"
+    );
+    let bodies: HashSet<_> = saved
+        .iter()
+        .map(|path| {
+            let feedback: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+            feedback["comments"][0]["body"].as_str().unwrap().to_owned()
+        })
+        .collect();
+    assert_eq!(bodies.len(), 8, "every edit survives");
+    assert!(saved.contains(&shared));
+    drop(dir);
 }
 
 #[test]

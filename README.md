@@ -30,7 +30,7 @@ review --diff --base main                   # review your branch against main
 review --reopen review-feedback.json        # look at saved feedback again
 ```
 
-In the TUI: `j`/`k` move, `v` selects lines, `c` comments, `Enter` records the comment (`Shift+Enter` for a new line), `s` saves, `q` quits, `?` shows every key. Feedback goes to `review-feedback.json`; a save never overwrites an existing file.
+In the TUI: `j`/`k` move, `v` selects lines, `c` comments, `Enter` records the comment (`Shift+Enter` for a new line), `s` saves, `q` quits, `?` shows every key. Feedback goes to `review-feedback.json`; the first save never overwrites an existing file, and later saves update the file it created.
 
 ## Hand the feedback to your agent
 

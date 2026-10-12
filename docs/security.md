@@ -10,4 +10,6 @@ The API exposes selected snapshots, comments, revision inspection, and the CLI-c
 
 This version implements the initial text, multiple-file, and unified-diff workflow in both interfaces. It uses the proposed Rust/Clap/Ratatui/Crossterm/Axum core and a TypeScript/Svelte/Vite frontend. Source selection provides reliable targets; rendered Markdown selection is deferred. Explicit saves and immutable snapshots keep the feedback workflow independent of any agent.
 
+Saves never replace a file the session did not write. A later save replaces the session's own file only while it is still the regular file the session last saw there; Review sessions take turns on an advisory lock on the save directory, and other programs replacing files in that directory during a save are out of scope.
+
 Limits are 2 MiB per text snapshot, 16 MiB of selected snapshots, 256 files, 10,000 comments, 32 KiB per comment, and 64 MiB per feedback file. Files must be regular UTF-8 text without NUL bytes. Revisions are inspected rather than merged into saved snapshots. There is no automatic draft recovery, editing, agent execution, accounts, image/PDF review, or cloud service. Linux was verified; other platforms and manual assistive-technology checks remain unverified.

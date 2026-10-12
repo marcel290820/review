@@ -157,8 +157,9 @@ try {
   let saved = await save(page, s);
   assert.equal(readFileSync(join(root, 'feedback.json'), 'utf8'), 'unrelated content');
   assert.equal(saved.feedback.files.length, 2); assert.equal(saved.feedback.comments.length, 2);
-  const firstSavedBytes = readFileSync(saved.path, 'utf8');
-  await save(page, s); assert.equal(readFileSync(saved.path, 'utf8'), firstSavedBytes);
+  // Saving again updates the session's own file; the unrelated file stays untouched.
+  assert.equal((await save(page, s)).path, saved.path);
+  assert.equal(readFileSync(join(root, 'feedback.json'), 'utf8'), 'unrelated content');
 
   await tab(page, 'plan.md').click();
   await page.getByRole('button', { name: 'preview', exact: true }).click();
