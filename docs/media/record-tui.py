@@ -57,9 +57,10 @@ def color(n):
     return '#%02x%02x%02x' % ((8 + 10 * (n - 232),) * 3)
 
 
-def cells(line):
-    """The characters of a captured line with their styles."""
-    style, out = {}, []
+def cells(line, style):
+    """The characters of a captured line with their styles, and the style it ends in: tmux
+    carries attributes from one line into the next."""
+    out = []
     for token in re.findall(r'\x1b\[[0-9;:]*m|[^\x1b]', line):
         if not token.startswith('\x1b'):
             if unicodedata.combining(token) and out:
@@ -95,7 +96,7 @@ def cells(line):
             elif 40 <= p <= 47 or 100 <= p <= 107:
                 style['bg'] = color(p - 40 if p < 100 else p - 92)
             i += 1
-    return out
+    return out, style
 
 
 def shot(seconds):
@@ -110,9 +111,11 @@ def shot(seconds):
 body{{margin:0}}.s{{position:relative;width:{COLS * cw}px;height:{ROWS * ch}px;padding:14px;background:{BG};
 color:{FG};font:16px/{ch}px J,monospace;font-variant-ligatures:none}}
 span{{position:absolute;height:{ch}px;white-space:pre}}</style><div class=s>''']
+    style = {}
     for row, line in enumerate(capture.split('\n')[:ROWS]):
         col = 0
-        for char, st, width in cells(line):
+        line_cells, style = cells(line, style)
+        for char, st, width in line_cells:
             fg, bg = st.get('fg', FG), st.get('bg')
             if st.get(7):
                 fg, bg = bg or BG, fg
@@ -147,7 +150,7 @@ def type_(text, step=2, hold=0.6):
 
 
 env = {'HOME': work, 'PATH': f"{work / 'bin'}:/usr/bin:/bin", 'TERM': 'tmux-256color', 'COLORTERM': 'truecolor',
-       'LANG': 'C.UTF-8', 'PS1': r'\[\e[38;2;127;176;232m\]~/api\[\e[0m\] $ '}
+       'LANG': 'C.UTF-8', 'BASH_SILENCE_DEPRECATION_WARNING': '1', 'PS1': r'\[\e[38;2;127;176;232m\]~/api\[\e[0m\] $ '}
 tmux('new-session', '-d', '-x', str(COLS), '-y', str(ROWS), '-s', 'demo', '-c', str(work / 'api'),
      'env', '-i', *(f'{k}={v}' for k, v in env.items()), 'bash', '--norc', '--noprofile', '-i')
 tmux('set', '-g', 'window-style', f'fg={FG},bg={BG}')
