@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import termios
 import time
+import urllib.request
 
 
 class Terminal:
@@ -121,6 +122,80 @@ def bridge(binary, input_path, output, root):
         terminal.close()
 
 
+def browser_enter(binary, root):
+    """Browser mode started as a background job keeps serving; once foreground, Enter opens the URL."""
+    stubs = root/'bin'
+    stubs.mkdir()
+    opened = root/'opened'
+    for name in ('open', 'xdg-open'):
+        (stubs/name).write_text(f'#!/bin/sh\necho "$1" > "{opened}"\n')
+        (stubs/name).chmod(0o755)
+    env = {**os.environ, 'PATH': f'{stubs}:{os.environ["PATH"]}'}
+    argv = [str(binary), '--browser', 'note.md', '--output', str(root/'browser.json')]
+    holder, master = pty.fork()
+    if holder == 0:
+        # A session leader holding the terminal in the foreground, with review in a background group.
+        signal.pthread_sigmask(signal.SIG_BLOCK, [signal.SIGUSR1])
+        os.chdir(root)
+        child = os.fork()
+        if child == 0:
+            os.setpgid(0, 0)
+            os.execve(argv[0], argv, env)
+        (root/'pid').write_text(str(child))
+        signal.sigwait([signal.SIGUSR1])
+        signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+        os.tcsetpgrp(0, child)
+        os._exit(os.waitpid(child, 0)[1] >> 8)
+    output = b''
+
+    def read(seconds):
+        # Keep reading: on macOS a process exiting from a PTY waits until its output is read.
+        nonlocal output
+        if select.select([master], [], [], seconds)[0]:
+            try:
+                output += os.read(master, 65536)
+            except OSError:
+                time.sleep(seconds)
+
+    try:
+        deadline = time.monotonic() + 8
+        while b'Press Enter' not in output and time.monotonic() < deadline:
+            read(0.1)
+        assert b'Press Enter' in output, output
+        url = re.search(rb'http://\S+', output).group().decode()
+        read(0.5)
+        # SIGTTIN would have stopped the whole server here.
+        with urllib.request.urlopen(url.split('#')[0], timeout=3) as response:
+            assert response.status == 200
+        os.kill(holder, signal.SIGUSR1)
+        read(0.2)
+        os.write(master, b'\r')
+        deadline = time.monotonic() + 5
+        def opened_url():
+            return opened.read_text().strip() if opened.exists() else None
+        while opened_url() != url and time.monotonic() < deadline:
+            read(0.05)
+        assert opened_url() == url, output
+        os.kill(int((root/'pid').read_text()), signal.SIGINT)
+        deadline = time.monotonic() + 5
+        while not os.waitpid(holder, os.WNOHANG)[0]:
+            assert time.monotonic() < deadline, f'Browser mode did not stop on Ctrl+C: {output!r}'
+            read(0.1)
+        holder = None
+    finally:
+        if holder:
+            for pid in (int((root/'pid').read_text()) if (root/'pid').exists() else None, holder):
+                if pid:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            os.close(master)
+            os.waitpid(holder, 0)
+        else:
+            os.close(master)
+
+
 def smoke(binary):
     with tempfile.TemporaryDirectory(prefix='review-tui-') as directory:
         root = Path(directory)
@@ -191,6 +266,7 @@ def smoke(binary):
             terminal.process.wait(timeout=5)
         finally:
             terminal.close()
+        browser_enter(binary, root)
         failed = subprocess.run([str(binary), 'note.md'], cwd=root, capture_output=True, text=True)
         assert failed.returncode != 0 and '--browser' in failed.stderr
         repo = root/'git'
@@ -228,7 +304,7 @@ def smoke(binary):
             terminal.finish()
         finally:
             terminal.close()
-    return {'tui': 'passed', 'checks': ['line ranges', 'Unicode multiline entry', 'edit', 'delete', 'multiple files', 'save/reopen', 'revision inspection', 'failed save retention', 'quit guard', 'terminal restoration', 'noninteractive CLI', 'Git old/new targets', 'mixed-side selection rejection']}
+    return {'tui': 'passed', 'checks': ['line ranges', 'Unicode multiline entry', 'edit', 'delete', 'multiple files', 'save/reopen', 'revision inspection', 'failed save retention', 'quit guard', 'terminal restoration', 'browser Enter from a background job', 'noninteractive CLI', 'Git old/new targets', 'mixed-side selection rejection']}
 
 
 if __name__ == '__main__':

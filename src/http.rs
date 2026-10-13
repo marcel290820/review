@@ -98,6 +98,10 @@ pub async fn serve(session: Session, port: u16) -> Result<()> {
         session.output().display()
     );
     println!("Open the URL in a browser. Save feedback before stopping this process with Ctrl+C.");
+    #[cfg(unix)]
+    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        offer_to_open(format!("http://{authority}/#token={token}"));
+    }
     let session = Arc::new(Mutex::new(session));
     let app = router(AppState {
         session: session.clone(),
@@ -136,6 +140,65 @@ async fn stop_requested(session: Arc<Mutex<Session>>) {
              Press Ctrl+C again within 3 seconds to discard it."
         );
         warned = Some(Instant::now());
+    }
+}
+
+/// Opens the URL when Enter is pressed. The blocking read runs on its own thread,
+/// which the process does not join on exit.
+#[cfg(unix)]
+fn offer_to_open(url: String) {
+    // A background job (`review --browser &`) would otherwise be stopped by SIGTTIN
+    // on reading the terminal, freezing the server; ignored, the read fails with EIO.
+    // SAFETY: setting a signal disposition to SIG_IGN installs no handler code.
+    unsafe { libc::signal(libc::SIGTTIN, libc::SIG_IGN) };
+    println!("Press Enter to open it in the default browser.");
+    std::thread::spawn(move || match wait_for_enter(std::io::stdin().lock()) {
+        Ok(true) => {
+            if let Err(e) = open_url(&url) {
+                eprintln!("Cannot open the browser: {e}. Open the URL above instead.");
+            }
+        }
+        Ok(false) => {}
+        Err(e) => eprintln!("Cannot read Enter: {e}. Open the URL above instead."),
+    });
+}
+
+/// Whether a line arrived before end of input. While the process is a background
+/// job, reads fail with EIO; it waits for the job to return to the foreground.
+#[cfg(unix)]
+fn wait_for_enter(mut input: impl std::io::BufRead) -> std::io::Result<bool> {
+    loop {
+        match input.read_line(&mut String::new()) {
+            Ok(n) => return Ok(n > 0),
+            // ponytail: polls once a second while in the background; a SIGCONT wakeup if that matters.
+            Err(e) if e.raw_os_error() == Some(libc::EIO) => {
+                std::thread::sleep(Duration::from_secs(1))
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Hands the URL to the platform's default opener.
+#[cfg(unix)]
+fn open_url(url: &str) -> std::io::Result<()> {
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let status = std::process::Command::new(opener)
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "{opener} exited with {status}"
+        )))
     }
 }
 
@@ -395,4 +458,40 @@ async fn save(State(state): State<AppState>) -> ApiResult {
     apply(&state, StatusCode::CONFLICT, |session| {
         session.save().map(drop)
     })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::wait_for_enter;
+    use std::io::{BufReader, Error, ErrorKind, Read, Result};
+
+    /// Fails with the given errors, then reads `rest`.
+    struct Failing(Vec<Error>, &'static [u8]);
+
+    impl Read for Failing {
+        fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+            match self.0.pop() {
+                Some(e) => Err(e),
+                None => self.1.read(buf),
+            }
+        }
+    }
+
+    #[test]
+    fn enter_opens_and_end_of_input_does_not() {
+        assert!(wait_for_enter(&b"\n"[..]).unwrap());
+        assert!(!wait_for_enter(&b""[..]).unwrap());
+    }
+
+    #[test]
+    fn background_reads_wait_and_other_errors_are_reported() {
+        let background = Failing(vec![Error::from_raw_os_error(libc::EIO)], b"\n");
+        assert!(wait_for_enter(BufReader::new(background)).unwrap());
+        let broken = Failing(
+            vec![Error::new(ErrorKind::PermissionDenied, "denied")],
+            b"\n",
+        );
+        let err = wait_for_enter(BufReader::new(broken)).unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::PermissionDenied);
+    }
 }

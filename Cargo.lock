@@ -1021,6 +1021,7 @@ dependencies = [
  "anyhow",
  "axum",
  "clap",
+ "libc",
  "pulldown-cmark",
  "rand",
  "ratatui",
