@@ -75,7 +75,10 @@ class Terminal:
         self.process.wait(timeout=8)
         self.drain()
         assert self.process.returncode == 0, self.output[-1500:]
-        assert termios.tcgetattr(self.slave) == self.original, 'Terminal settings were not restored'
+        # The kernel sets PENDIN itself when canonical mode returns with input pending.
+        restored = termios.tcgetattr(self.slave)
+        restored[3] &= ~getattr(termios, 'PENDIN', 0)
+        assert restored == self.original, 'Terminal settings were not restored'
         os.close(self.master)
         os.close(self.slave)
 
