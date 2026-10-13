@@ -4,6 +4,7 @@ use super::editor::Editor;
 use crate::{
     diff::{DiffKind, DiffRow},
     feedback::{ReviewFile, Side, Snapshot, line_range, lines},
+    files,
     markdown::{self, Mark},
     session::{DiskStatus, Session},
 };
@@ -396,7 +397,7 @@ impl App {
 
     fn save(&mut self) -> Result<()> {
         let path = self.session.save()?;
-        self.say(format!("Saved to {}", path.display()));
+        self.say(format!("Saved to {}", files::display(&path)));
         Ok(())
     }
 

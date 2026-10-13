@@ -3,7 +3,7 @@
 use crate::{
     diff::DiffRow,
     feedback::{Comment, ReviewFile, new_id},
-    markdown,
+    files, markdown,
     session::{DiskState, Session},
 };
 use anyhow::Result;
@@ -17,6 +17,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    io::IsTerminal,
     net::Ipv4Addr,
     sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant},
@@ -92,16 +93,15 @@ pub async fn serve(session: Session, port: u16) -> Result<()> {
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await?;
     let authority = listener.local_addr()?.to_string();
     let token = new_id();
-    println!("Review: http://{authority}/#token={token}");
-    println!(
-        "Feedback destination: {} (numbered saves preserve existing files)",
-        session.output().display()
-    );
-    println!("Open the URL in a browser. Save feedback before stopping this process with Ctrl+C.");
+    let url = format!("http://{authority}/#token={token}");
+    println!("Review is running at {url}");
+    println!("Feedback saves to {}", files::display(session.output()));
+    println!();
     #[cfg(unix)]
-    if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        offer_to_open(format!("http://{authority}/#token={token}"));
+    if std::io::stdin().is_terminal() {
+        offer_to_open(url);
     }
+    println!("Keep this running while you review. Save in the browser, then stop with Ctrl+C.");
     let session = Arc::new(Mutex::new(session));
     let app = router(AppState {
         session: session.clone(),
@@ -120,7 +120,7 @@ pub async fn serve(session: Session, port: u16) -> Result<()> {
         eprintln!("Discarded unsaved feedback.");
     }
     if let Some(path) = saved {
-        println!("Feedback: {}", path.display());
+        println!("Feedback: {}", files::display(&path));
     }
     Ok(())
 }
@@ -132,12 +132,16 @@ async fn stop_requested(session: Arc<Mutex<Session>>) {
             eprintln!("Cannot listen for Ctrl+C: {e}");
             return std::future::pending().await;
         }
+        // What follows starts on its own line, not after the terminal's ^C.
+        if std::io::stderr().is_terminal() {
+            eprintln!();
+        }
         if !is_dirty(&session) || warned.is_some_and(|at| at.elapsed() < DISCARD_WINDOW) {
             return;
         }
         eprintln!(
-            "Unsaved feedback. Save in the browser, then stop again. \
-             Press Ctrl+C again within 3 seconds to discard it."
+            "Unsaved feedback. Save it in the browser, then stop again.\n\
+             Press Ctrl+C within 3 seconds to discard it."
         );
         warned = Some(Instant::now());
     }
@@ -151,7 +155,7 @@ fn offer_to_open(url: String) {
     // on reading the terminal, freezing the server; ignored, the read fails with EIO.
     // SAFETY: setting a signal disposition to SIG_IGN installs no handler code.
     unsafe { libc::signal(libc::SIGTTIN, libc::SIG_IGN) };
-    println!("Press Enter to open it in the default browser.");
+    println!("Press Enter to open the review in your default browser.");
     std::thread::spawn(move || match wait_for_enter(std::io::stdin().lock()) {
         Ok(true) => {
             if let Err(e) = open_url(&url) {

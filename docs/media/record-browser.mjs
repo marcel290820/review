@@ -46,11 +46,11 @@ const timeline = [];
 let browser;
 try {
   const deadline = Date.now() + 10000;
-  while (!/Review: (\S+)/.test(output)) {
+  while (!/Review is running at (http:\/\/\S+)/.test(output)) {
     if (server.exitCode !== null || Date.now() > deadline) throw new Error(`Review did not start: ${output}`);
     await new Promise((r) => setTimeout(r, 50));
   }
-  const url = output.match(/Review: (\S+)/)[1];
+  const url = output.match(/Review is running at (http:\/\/\S+)/)[1];
   browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1200, height: 720 }, colorScheme: 'light' });
   await page.addInitScript(POINTER);

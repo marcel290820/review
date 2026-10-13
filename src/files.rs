@@ -4,6 +4,7 @@
 use crate::feedback::{MAX_FEEDBACK, MAX_TEXT, check_relative};
 use anyhow::{Context, Result, bail, ensure};
 use std::{
+    env,
     fs::{self, File},
     hash::{DefaultHasher, Hash, Hasher},
     io::{ErrorKind, Read, Write},
@@ -145,6 +146,22 @@ pub fn replace_held(_path: &Path, _held: Held, _data: &[u8]) -> Result<Option<He
     Ok(None)
 }
 
+/// `path` as people read it: relative to the working directory when below it, otherwise below
+/// the home directory as `~/…`, otherwise in full.
+pub fn display(path: &Path) -> String {
+    if let Some(relative) = env::current_dir()
+        .ok()
+        .and_then(|cwd| path.strip_prefix(cwd).ok().map(Path::to_path_buf))
+        .filter(|relative| !relative.as_os_str().is_empty())
+    {
+        return relative.display().to_string();
+    }
+    match env::var_os("HOME").and_then(|home| path.strip_prefix(home).ok().map(Path::to_path_buf)) {
+        Some(relative) => Path::new("~").join(relative).display().to_string(),
+        None => path.display().to_string(),
+    }
+}
+
 /// `path` is `output` or one of its numbered alternatives, `output.N.json`.
 pub fn is_save_of(path: &Path, output: &Path) -> bool {
     let (Some(name), Some(base)) = (path.file_name(), output.file_name()) else {
@@ -200,4 +217,18 @@ pub fn save_new(output: &Path, data: &[u8]) -> Result<(PathBuf, Held)> {
         "No free feedback filename next to {}; choose another --output",
         output.display()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paths_show_relative_to_the_working_directory() {
+        let cwd = env::current_dir().unwrap();
+        let below = Path::new("out").join("feedback.json");
+        assert_eq!(display(&cwd.join(&below)), below.display().to_string());
+        let elsewhere = Path::new("/nonexistent-review-root/feedback.json");
+        assert_eq!(display(elsewhere), elsewhere.display().to_string());
+    }
 }
