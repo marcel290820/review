@@ -1226,7 +1226,7 @@ fn hints(app: &App) -> Vec<(&'static str, &'static str)> {
         Some(Prompt::Draft(_)) => {
             return vec![
                 ("enter", "record"),
-                ("shift+enter", "new line"),
+                ("shift/alt+enter", "new line"),
                 ("esc", "cancel"),
             ];
         }

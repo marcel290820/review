@@ -26,8 +26,8 @@
     textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
   });
 
-  // Enter records, as in chat, and Shift+Enter starts a new line. On touch screens Enter
-  // starts a new line and the button records.
+  // Enter records, as in chat; Shift+Enter and Alt+Enter start a new line. On touch screens
+  // Enter starts a new line and the button records.
   const touch = matchMedia('(hover: none)');
 
   function onkeydown(event: KeyboardEvent) {
@@ -37,6 +37,11 @@
     if (event.key === 'Enter' && plain && !touch.matches) {
       event.preventDefault();
       void review.record();
+    } else if (event.key === 'Enter' && event.altKey && !composing) {
+      // Browsers insert nothing for Alt+Enter, so the composer types the line break as an edit,
+      // which keeps undo, readonly, and maxlength.
+      event.preventDefault();
+      document.execCommand('insertText', false, '\n');
     } else if (event.key === 'Escape') {
       event.preventDefault();
       review.cancelDraft();

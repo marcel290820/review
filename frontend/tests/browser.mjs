@@ -124,8 +124,14 @@ try {
   await page.keyboard.press('v'); await page.keyboard.press('j');
   await page.keyboard.press('c');
   await expect(page.locator('.composer-title')).toHaveText('plan.md:3-4');
-  // Enter records and Shift+Enter starts a new line, as in chat.
+  // Alt+Enter cannot push a full draft past the comment limit.
+  await page.getByLabel('Comment', { exact: true }).fill('x'.repeat(32768));
+  await page.keyboard.press('Alt+Enter');
+  assert.equal((await page.getByLabel('Comment', { exact: true }).inputValue()).length, 32768, 'Alt+Enter respects the limit');
+  await page.getByLabel('Comment', { exact: true }).fill('');
+  // Enter records; Shift+Enter and Alt+Enter start a new line, as in chat.
   await page.keyboard.type('Keyboard'); await page.keyboard.press('Shift+Enter'); await page.keyboard.type('range');
+  await page.keyboard.press('Alt+Enter'); await page.keyboard.type('too');
   // An Enter that ends an IME composition, as Safari reports it, leaves the draft open.
   await page.getByLabel('Comment', { exact: true }).evaluate(area => {
     const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
@@ -136,7 +142,7 @@ try {
   await expect(page.locator('.composer')).toHaveCount(1);
   await page.keyboard.press('Enter');
   await expect(page.getByRole('status')).toContainText('Comment recorded');
-  assert.ok((await s.state()).comments.some(c => c.body === 'Keyboard\nrange'), 'Shift+Enter starts a new line');
+  assert.ok((await s.state()).comments.some(c => c.body === 'Keyboard\nrange\ntoo'), 'Shift+Enter and Alt+Enter start a new line');
   await page.keyboard.press('a');
   await expect(page.locator('.listed')).toHaveCount(2);
   await page.keyboard.press('j'); await page.keyboard.press('d');
@@ -257,6 +263,8 @@ try {
   await diffUI.page.getByLabel('Comment', { exact: true }).fill('New side concern');
   await diffUI.page.getByRole('button', { name: 'Add comment', exact: true }).click();
   await expect(diffUI.page.getByLabel('Comment', { exact: true })).toHaveAttribute('readonly', '');
+  await diffUI.page.getByLabel('Comment', { exact: true }).press('Alt+Enter');
+  assert.equal(await diffUI.page.getByLabel('Comment', { exact: true }).inputValue(), 'New side concern', 'a pending comment cannot change');
   await diffUI.page.locator('header .brand').click();
   await diffUI.page.keyboard.press('a'); await diffUI.page.keyboard.press('d');
   await expect(diffUI.page.getByRole('status')).toContainText('Wait for the current change');

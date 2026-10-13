@@ -65,7 +65,7 @@ The TUI keeps your terminal's font and background. At startup it asks the termin
 
 ## Browser controls
 
-Click a line number, Shift-click another to extend the range, or drag across text for an exact passage, then press `c` or the **Comment** button. The composer opens where the comment will land; Enter records it, Shift+Enter starts a new line, and Esc cancels. On touch screens Enter starts a new line and the **Add comment** button records. Comments hang beneath their lines, with edit and delete beside them on hover. **Save feedback**, `s`, or Ctrl+S outside the composer saves.
+Click a line number, Shift-click another to extend the range, or drag across text for an exact passage, then press `c` or the **Comment** button. The composer opens where the comment will land; Enter records it, Shift+Enter or Alt+Enter starts a new line, and Esc cancels. On touch screens Enter starts a new line and the **Add comment** button records. Comments hang beneath their lines, with edit and delete beside them on hover. **Save feedback**, `s`, or Ctrl+S outside the composer saves.
 
 The keys follow the TUI: `j`/`k` move, Space and Page Up/Down move a screen (Shift+Space back), `v` selects lines, `c` comments, `a` lists all comments (`j`/`k`, Enter, `e`, and `d` act on the list), `[`/`]` switch files, `b` cycles views, `o`/`n` choose the side for diff context lines, `r` shows changes on disk, and `?` shows every key and the save destination. The list uses `a` in both interfaces; the TUI also accepts Tab, which in the browser keeps moving focus. Clicking the saved file name in the key line copies its path.
 
