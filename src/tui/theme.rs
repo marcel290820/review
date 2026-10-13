@@ -15,12 +15,17 @@ pub struct Theme {
     pub muted: Style,
     /// Line numbers, rules, and Markdown syntax.
     pub faint: Style,
-    /// Focus, the cursor, headings, and list markers.
+    /// Focus, the cursor, and titles.
     pub accent: Style,
-    /// Comment text and commented-range markers.
+    /// Comment text.
     pub note: Style,
-    /// A comment being written, before it is recorded.
-    pub draft: Style,
+    /// The threads from commented lines to their comments.
+    pub thread: Style,
+    /// A comment card, and the card of the comment chosen in the list or being written.
+    pub card: Style,
+    pub open_card: Style,
+    /// The key line and the drawers above it.
+    pub surface: Style,
     pub code: Style,
     pub error: Style,
     pub added: Style,
@@ -79,14 +84,18 @@ impl Theme {
         };
         let fg_style = |rgb| Style::new().fg(color(rgb));
         let tint = |hue, amount| Style::new().fg(color(fg)).bg(color(mix(bg, hue, amount)));
+        let card = |amount| fg_style(note).bg(color(mix(bg, accent, amount)));
         // Grays lean toward the accent so secondary text stays in the blue family.
         let gray = |amount| fg_style(mix(mix(fg, bg, amount), accent, 0.12));
         Self {
             muted: gray(0.45),
             faint: gray(0.68),
             accent: fg_style(accent),
-            note: fg_style(note).add_modifier(Modifier::ITALIC),
-            draft: fg_style(mix(note, bg, 0.45)).add_modifier(Modifier::ITALIC),
+            note: fg_style(note),
+            thread: fg_style(note),
+            card: card(0.1),
+            open_card: card(0.2),
+            surface: tint(fg, 0.06),
             // A desaturated slate, so code reads apart from prose without competing with comments.
             code: gray(0.3),
             error: fg_style(red),
@@ -109,7 +118,10 @@ impl Theme {
             faint: dim,
             accent: bold,
             note: Style::new().add_modifier(Modifier::ITALIC),
-            draft: Style::new().add_modifier(Modifier::ITALIC | Modifier::DIM),
+            thread: Style::new(),
+            card: Style::new(),
+            open_card: Style::new().add_modifier(Modifier::BOLD),
+            surface: Style::new(),
             code: Style::new(),
             error: bold,
             added: bold,

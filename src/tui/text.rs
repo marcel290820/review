@@ -39,31 +39,68 @@ pub fn text_width(text: &str) -> usize {
 /// Byte ranges of `text` in visual lines of at most `width` cells, broken after spaces where
 /// possible. The ranges cover every byte except the `\n` between lines.
 pub fn wrap(text: &str, width: usize) -> Vec<Range<usize>> {
-    let width = width.max(1);
     let mut lines = Vec::new();
     let mut offset = 0;
     for line in text.split('\n') {
-        let (mut start, mut used, mut space) = (offset, 0, None);
-        for (i, grapheme) in line.grapheme_indices(true) {
-            let at = offset + i;
-            let w = grapheme_width(grapheme);
-            // Breaking after a space carries its word along, which may still not fit.
-            while used + w > width && at > start {
-                let next = space.filter(|&s| s > start).unwrap_or(at);
-                lines.push(start..next);
-                used = text_width(&text[next..at]);
-                start = next;
-                space = None;
-            }
-            used += w;
-            if grapheme == " " {
-                space = Some(at + 1);
-            }
-        }
-        lines.push(start..offset + line.len());
+        let rows = wrap_line(line, width, 0, usize::MAX);
+        lines.extend(rows.into_iter().map(|r| offset + r.start..offset + r.end));
         offset += line.len() + 1;
     }
     lines
+}
+
+/// Byte ranges of one line in at most `max` rows: the first `width` cells wide, the rest
+/// `indent` cells narrower. Rows break after the last space that fits, but not within the
+/// line's leading indentation, and otherwise where they are full.
+pub fn wrap_line(line: &str, width: usize, indent: usize, max: usize) -> Vec<Range<usize>> {
+    let graphemes: Vec<(usize, &str)> = line.grapheme_indices(true).collect();
+    let at = |i: usize| graphemes.get(i).map_or(line.len(), |&(byte, _)| byte);
+    let (mut rows, mut first, mut room, mut text) = (Vec::new(), 0, width.max(1), false);
+    loop {
+        // Each row takes at least one character, so the loop ends.
+        let (mut used, mut end, mut space) = (0, first, None);
+        while let Some(&(_, grapheme)) = graphemes.get(end) {
+            let w = grapheme_width(grapheme);
+            if used + w > room && end > first {
+                break;
+            }
+            used += w;
+            end += 1;
+            if grapheme == " " && text {
+                space = Some(end);
+            }
+            text |= !matches!(grapheme, " " | "\t");
+        }
+        if end == graphemes.len() {
+            rows.push(at(first)..line.len());
+            return rows;
+        }
+        let next = space.unwrap_or(end);
+        rows.push(at(first)..at(next));
+        if rows.len() >= max {
+            return rows;
+        }
+        first = next;
+        room = width.saturating_sub(indent).max(1);
+    }
+}
+
+/// Cells that the wrapped rows of `line` indent by: its own indentation and a list or quote
+/// marker after it, so a wrapped item stays apart from the next.
+pub fn hanging_indent(line: &str) -> usize {
+    let rest = line.trim_start_matches([' ', '\t']);
+    let lead = text_width(&line[..line.len() - rest.len()]);
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let marker = if ["- ", "* ", "+ ", "> "].iter().any(|m| rest.starts_with(m)) {
+        2
+    } else if (1..=9).contains(&digits)
+        && [". ", ") "].iter().any(|m| rest[digits..].starts_with(m))
+    {
+        digits + 2
+    } else {
+        0
+    };
+    lead + marker
 }
 
 /// `text` cut to `width` cells, ending in `…` when cut.
@@ -133,7 +170,8 @@ mod tests {
         assert_eq!(wrapped("🦀🦀🦀", 4), ["🦀🦀", "🦀"]);
         assert_eq!(wrapped(&FAMILY.repeat(2), 2), [FAMILY, FAMILY]);
         assert_eq!(wrapped("", 4), [""]);
-        assert_eq!(wrapped(" ab\u{754c}", 3), [" ", "ab", "\u{754c}"]);
+        // Leading indentation is no place to break.
+        assert_eq!(wrapped(" ab\u{754c}", 3), [" ab", "\u{754c}"]);
         for text in ["一 二三 四五六 x", "ab 🦀🦀 c\td 界界界", "a b 👨‍👩‍👧👨‍👩‍👧 c"]
         {
             for width in 2..8 {
@@ -145,6 +183,49 @@ mod tests {
                 assert_eq!(rows.concat(), text);
             }
         }
+    }
+
+    #[test]
+    fn wrapped_rows_hang_under_their_first_and_stop_at_max() {
+        let line = "- stage it per region";
+        let rows: Vec<&str> = wrap_line(line, 9, 2, 9)
+            .into_iter()
+            .map(|r| &line[r])
+            .collect();
+        assert_eq!(rows, ["- stage ", "it per ", "region"]);
+        assert_eq!(wrap_line(line, 9, 2, 2).len(), 2);
+        assert_eq!(wrap_line("", 4, 0, 3).len(), 1);
+        // An indent as wide as the row still leaves one cell.
+        assert_eq!(wrap_line("abc", 2, 5, 9), [0..2, 2..3]);
+        // Text carried onto a narrower row is wrapped again to fit it.
+        for line in [
+            " \tABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+            "- ab cdefghijklmnop qr",
+            "一 二三 四五六 x 🦀🦀 c\td",
+        ] {
+            for (width, indent) in [(32, 5), (9, 2), (6, 4), (3, 1)] {
+                let rows = wrap_line(line, width, indent, usize::MAX);
+                assert_eq!(rows.first().unwrap().start, 0);
+                assert!(rows.windows(2).all(|w| w[0].end == w[1].start));
+                assert_eq!(rows.last().unwrap().end, line.len());
+                for (n, row) in rows.iter().enumerate() {
+                    let room = if n == 0 { width } else { width - indent };
+                    let row = &line[row.clone()];
+                    let fits = text_width(row) <= room || row.graphemes(true).count() == 1;
+                    assert!(fits, "{line:?} at {width}/{indent}: {rows:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hanging_indents_follow_indentation_and_list_markers() {
+        assert_eq!(hanging_indent("plain"), 0);
+        assert_eq!(hanging_indent("  - item"), 4);
+        assert_eq!(hanging_indent("12. step"), 4);
+        assert_eq!(hanging_indent("> quote"), 2);
+        assert_eq!(hanging_indent("\tcode"), 4);
+        assert_eq!(hanging_indent("-not a list"), 0);
     }
 
     #[test]

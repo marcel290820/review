@@ -43,8 +43,7 @@ Both interfaces check disk revisions periodically. Inspect revisions shows addit
 
 | Key | Action |
 | --- | --- |
-| `j`/`k`, arrows, Space, Page Up/Down, Home/End | Navigate content or comments; in the list, the cursor follows the chosen comment |
-| `h`/`l`, left/right arrows | Scroll long source lines horizontally |
+| `j`/`k`, arrows, Space, Page Up/Down, Home/End | Navigate content or comments; in the list, the cursor follows the chosen comment. A line taller than the screen scrolls through before the cursor moves on |
 | `v`, move, `c` | Select a line range and write a comment |
 | `c` | Comment on the current line |
 | `a` or `Tab` | Open or close the list of all comments, grouped by file; it opens on the current file's comments |
@@ -59,7 +58,7 @@ Both interfaces check disk revisions periodically. Inspect revisions shows addit
 | `?` | Show all keys and the save destination |
 | `q` / Ctrl+C | Quit; unsaved feedback prompts for save, discard, or cancel |
 
-Comment input supports multiline text, Unicode, arrows, Home/End, Backspace/Delete, and bracketed paste. Enter records the comment in memory; Shift+Enter starts a new line in terminals that report it (kitty keyboard protocol), and Alt+Enter or Ctrl+J does in every terminal; Esc cancels the draft, and once you have written or changed text it takes a second Esc, so a habitual Esc cannot lose it. Press `s` afterward to save JSON. The TUI displays source text with line numbers, including Markdown syntax, which it styles lightly. Comments appear beneath the lines they target, and a draft shows where it will land while you write. In long files, a rail on the right edge marks the visible part and each comment. Diffs label each hunk with its lines and highlight changed words. The TUI replaces terminal control characters for display while preserving the original bytes in feedback.
+Comment input supports multiline text, Unicode, arrows, Home/End, Backspace/Delete, and bracketed paste. Enter records the comment in memory; Shift+Enter starts a new line in terminals that report it (kitty keyboard protocol), and Alt+Enter or Ctrl+J does in every terminal; Esc cancels the draft, and once you have written or changed text it takes a second Esc, so a habitual Esc cannot lose it. Press `s` afterward to save JSON. The TUI displays source text with line numbers, including Markdown syntax, which it styles lightly. Long lines wrap between words, and list items, quotes, and indented code continue under their own text. Comments appear on cards beneath the lines they target, and you write a comment in its card, where it will land. The comment list, the key reference, and the quit prompt open in a drawer above the key line. In long files, a rail on the right edge marks the visible part and each comment. Diffs label each hunk with its lines and highlight changed words. The TUI replaces terminal control characters for display while preserving the original bytes in feedback.
 
 The TUI keeps your terminal's font and background. At startup it asks the terminal for its colors and derives a matching light or dark palette; terminals that do not answer get the dark palette. Colors use 24-bit values when `COLORTERM` is `truecolor` or `24bit`, otherwise the 256-color palette. `NO_COLOR` turns colors off.
 

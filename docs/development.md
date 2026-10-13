@@ -10,7 +10,7 @@ The code is organized as one library with two interfaces:
 | `src/diff.rs` | Unified diff rows numbered like comment targets, with changed words and hunk labels |
 | `src/markdown.rs` | Markdown styling marks for source lines and inert preview HTML, for both interfaces |
 | `src/git.rs` | Review content from read-only Git commands |
-| `src/tui/` | Terminal interface: state and keys (`app.rs`), drawing (`view.rs`), colors (`theme.rs`), text measuring (`text.rs`), comment editor |
+| `src/tui/` | Terminal interface: state and keys (`app.rs`), drawing (`view.rs`), colors (`theme.rs`), text measuring and wrapping (`text.rs`), comment editor |
 | `src/http.rs` | Loopback HTTP adapter and embedded assets |
 | `frontend/src/` | Svelte browser interface: state and actions (`review.svelte.ts`), view rows (`rows.ts`), byte and line math mirroring the core (`lines.ts`), and components |
 | `frontend/public/fonts/` | The embedded fonts and their licenses |

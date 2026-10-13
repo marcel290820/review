@@ -14,8 +14,6 @@ use std::{mem, ops::Range};
 
 /// Rows moved by Page Up and Page Down.
 const PAGE: usize = 12;
-/// Columns moved by one horizontal scroll.
-const SCROLL_STEP: usize = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -120,7 +118,11 @@ pub struct App {
     pub anchor: Option<usize>,
     /// First visible row, maintained while drawing.
     pub top: usize,
-    pub scroll_x: usize,
+    /// When the cursor row and its comments are taller than the screen, the row and how many
+    /// of their lines are scrolled past; maintained while drawing.
+    pub within: (usize, usize),
+    /// How many lines `within` may scroll; maintained while drawing.
+    pub within_room: usize,
     pub focus: Focus,
     /// Index of the selected comment.
     pub comment: usize,
@@ -142,7 +144,8 @@ impl App {
             cursor: 0,
             anchor: None,
             top: 0,
-            scroll_x: 0,
+            within: (0, 0),
+            within_room: 0,
             focus: Focus::Content,
             comment: 0,
             prompt: None,
@@ -320,15 +323,26 @@ impl App {
                 };
                 self.show(self.file, view, None);
             }
-            KeyCode::Left | KeyCode::Char('h') => {
-                self.scroll_x = self.scroll_x.saturating_sub(SCROLL_STEP)
-            }
-            KeyCode::Right | KeyCode::Char('l') => self.scroll_x += SCROLL_STEP,
             KeyCode::Esc if self.focus == Focus::Comments => self.focus = Focus::Content,
             KeyCode::Esc => self.anchor = None,
             code => match self.focus {
                 Focus::Content => match navigate(code, self.cursor, self.rows.len()) {
-                    Some(row) => self.cursor = row,
+                    _ if self.scroll_within(code) => {}
+                    Some(row) => {
+                        // A row taller than the screen shows the side it is entered from;
+                        // the top and the bottom show the very start and end.
+                        let skip = match code {
+                            KeyCode::Home | KeyCode::Char('g') => Some(0),
+                            KeyCode::End | KeyCode::Char('G') => Some(usize::MAX),
+                            _ if row == self.cursor => None,
+                            KeyCode::Up | KeyCode::Char('k') | KeyCode::PageUp => Some(usize::MAX),
+                            _ => Some(0),
+                        };
+                        if let Some(skip) = skip {
+                            self.within = (row, skip);
+                        }
+                        self.cursor = row;
+                    }
                     None => self.content_key(code)?,
                 },
                 Focus::Comments => {
@@ -345,6 +359,27 @@ impl App {
             },
         }
         Ok(())
+    }
+
+    /// Scrolls through the cursor row and its comments when they are taller than the screen,
+    /// before moving on; whether `code` scrolled.
+    fn scroll_within(&mut self, code: KeyCode) -> bool {
+        let (row, skip) = self.within;
+        let room = if row == self.cursor {
+            self.within_room
+        } else {
+            0
+        };
+        let skip = skip.min(room);
+        let scrolled = match code {
+            KeyCode::Down | KeyCode::Char('j') if skip < room => skip + 1,
+            KeyCode::Up | KeyCode::Char('k') if skip > 0 => skip - 1,
+            KeyCode::PageDown | KeyCode::Char(' ') if skip < room => (skip + PAGE).min(room),
+            KeyCode::PageUp if skip > 0 => skip.saturating_sub(PAGE),
+            _ => return false,
+        };
+        self.within = (self.cursor, scrolled);
+        true
     }
 
     fn content_key(&mut self, code: KeyCode) -> Result<()> {
@@ -533,7 +568,7 @@ impl App {
         self.file = file;
         self.view = view;
         self.anchor = None;
-        self.scroll_x = 0;
+        (self.within, self.within_room) = ((0, 0), 0);
         self.rebuild();
         let first = || self.rows.iter().position(|r| r.target.is_some());
         self.cursor = cursor.or_else(first).unwrap_or(0).min(self.rows.len() - 1);
