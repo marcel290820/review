@@ -760,7 +760,7 @@ button.n:hover {
   top: 0;
   left: var(--rail);
   width: calc(var(--gutter) - var(--rail));
-  height: 14px;
+  height: 12px;
   border-left: 2px solid var(--accent);
   border-bottom: 2px solid var(--accent);
   border-bottom-left-radius: 8px;

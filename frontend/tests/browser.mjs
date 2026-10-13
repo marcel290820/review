@@ -124,6 +124,12 @@ try {
   await page.keyboard.press('v'); await page.keyboard.press('j');
   await page.keyboard.press('c');
   await expect(page.locator('.composer-title')).toHaveText('plan.md:3-4');
+  // The thread's curl lands on the composer's top rule. Pseudo-elements keep content-box sizing.
+  const [curl, rule] = await page.locator('.composer').evaluate(c => {
+    const thread = getComputedStyle(c, '::before');
+    return [parseFloat(thread.top) + parseFloat(thread.height), c.querySelector('.composer-card').offsetTop];
+  });
+  assert.equal(curl, rule, 'the thread curls into the top rule');
   // Alt+Enter cannot push a full draft past the comment limit.
   await page.getByLabel('Comment', { exact: true }).fill('x'.repeat(32768));
   await page.keyboard.press('Alt+Enter');
