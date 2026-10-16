@@ -19,8 +19,10 @@ pub struct Theme {
     pub accent: Style,
     /// Comment text.
     pub note: Style,
-    /// The threads from commented lines to their comments.
+    /// The threads from commented lines to their comments, and the thread of the comment
+    /// chosen in the list or being written. Never bold: a bold glyph misses the rail it joins.
     pub thread: Style,
+    pub open_thread: Style,
     /// A comment card, and the card of the comment chosen in the list or being written.
     pub card: Style,
     pub open_card: Style,
@@ -93,6 +95,7 @@ impl Theme {
             accent: fg_style(accent),
             note: fg_style(note),
             thread: fg_style(note),
+            open_thread: fg_style(accent),
             card: card(0.1),
             open_card: card(0.2),
             surface: tint(fg, 0.06),
@@ -119,6 +122,7 @@ impl Theme {
             accent: bold,
             note: Style::new().add_modifier(Modifier::ITALIC),
             thread: Style::new(),
+            open_thread: Style::new(),
             card: Style::new(),
             open_card: Style::new().add_modifier(Modifier::BOLD),
             surface: Style::new(),

@@ -538,6 +538,10 @@ fn render_content(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         .iter()
         .find(|(index, _)| app.focus == Focus::Comments && *index == app.comment)
         .map(|(_, c)| &c.target);
+    let edited = draft
+        .and_then(|d| d.editing())
+        .and_then(|id| comments.iter().find(|(_, c)| c.id == id))
+        .map(|(_, c)| &c.target);
     let mut lines: Vec<Line> = Vec::with_capacity(skip + height);
     // Where the cursor of a comment being written is, as a column and a line.
     let mut caret = None;
@@ -550,13 +554,15 @@ fn render_content(frame: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
         let selected =
             (selecting && (from..=to).contains(&i)) || chosen.is_some_and(|t| covers(t, row));
         // A draft's range shows its rail before the comment is recorded.
-        let commented =
-            (adding && selected) || comments.iter().any(|(_, c)| covers(&c.target, row));
+        let open =
+            (adding && selected) || [chosen, edited].iter().flatten().any(|t| covers(t, row));
+        let commented = open || comments.iter().any(|(_, c)| covers(&c.target, row));
         let state = RowState {
             // While the list has the keys, only its chosen comment is marked.
             cursor: i == app.cursor && app.focus == Focus::Content,
             selected,
             commented,
+            open,
         };
         lines.extend(row_lines(row, &state, &gutter, width, skip + height, theme));
         let notes = notes_at(i);
@@ -622,6 +628,8 @@ struct RowState {
     cursor: bool,
     selected: bool,
     commented: bool,
+    /// Its rail leads to the comment chosen in the list or being written.
+    open: bool,
 }
 
 /// Cells that the wrapped lines of `row` indent by, at most half of `room`.
@@ -705,7 +713,12 @@ fn row_lines(
             // A light line in the cell's middle, so the rail runs straight into its comment's
             // thread.
             let marker = if state.commented { "│" } else { " " };
-            spans.extend([Span::raw(" "), Span::styled(marker, theme.thread)]);
+            let thread = if state.open {
+                theme.open_thread
+            } else {
+                theme.thread
+            };
+            spans.extend([Span::raw(" "), Span::styled(marker, thread)]);
             spans.push(match row.kind {
                 Some(DiffKind::Add) if first => Span::styled("+", theme.added),
                 Some(DiffKind::Delete) if first => Span::styled("-", theme.deleted),
@@ -801,9 +814,7 @@ fn card_lines(
 ) -> Vec<Line<'static>> {
     let (surface, thread) = match note {
         Note::Plain => (theme.card, theme.thread),
-        Note::Chosen | Note::Writing => {
-            (theme.open_card, theme.accent.add_modifier(Modifier::BOLD))
-        }
+        Note::Chosen | Note::Writing => (theme.open_card, theme.open_thread),
     };
     let line = |first: bool, text: String, style: Style| {
         let (joint, rule) = match (first, last) {
@@ -1615,6 +1626,16 @@ mod tests {
             let lines: Vec<String> = (0..12)
                 .map(|y| (0..60).map(|x| buffer[(x, y)].symbol()).collect())
                 .collect();
+            // The thread's corner and the rail above it join as one line: same color and
+            // weight, as a bold corner comes from another font and misses the rail.
+            let y = lines.iter().position(|l| l.contains("╰─")).unwrap() as u16;
+            let x = lines[usize::from(y)]
+                .chars()
+                .position(|c| c == '╰')
+                .unwrap() as u16;
+            let (corner, rail) = (&buffer[(x, y)], &buffer[(x, y - 1)]);
+            assert_eq!((rail.symbol(), rail.fg), ("│", corner.fg), "{lines:#?}");
+            assert!(!(corner.modifier | rail.modifier).contains(Modifier::BOLD));
             (lines, terminal.get_cursor_position().unwrap())
         };
         for code in [KeyCode::Char('v'), KeyCode::Char('j'), KeyCode::Char('c')] {
@@ -1629,8 +1650,11 @@ mod tests {
         let (lines, cursor) = draw(&mut app);
         assert!(lines[card].contains("╰─ Say why"), "{lines:#?}");
         assert_eq!((cursor.x, cursor.y), (15, card as u16));
-        // Recorded, it stays where it was written.
+        // Recorded, it stays where it was written, and chosen in the list too.
         app.handle_key(KeyEvent::from(KeyCode::Enter));
+        let (lines, _) = draw(&mut app);
+        assert!(lines[card].contains("╰─ Say why"), "{lines:#?}");
+        app.handle_key(KeyEvent::from(KeyCode::Char('a')));
         let (lines, _) = draw(&mut app);
         assert!(lines[card].contains("╰─ Say why"), "{lines:#?}");
     }
