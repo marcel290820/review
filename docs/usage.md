@@ -72,7 +72,7 @@ The Markdown preview is read-only; comments target the source, which styles Mark
 
 The interface follows the system's light or dark setting and embeds its fonts, JetBrains Mono and IBM Plex Sans (SIL Open Font License). Large files stay responsive: rows render in chunks that the browser skips while they are off screen, and files over 4,000 lines render each chunk as it nears the view, so the browser's find covers only what has rendered.
 
-Several tabs share one review session; when two tabs edit the same comment, the last recorded edit wins. The browser warns before leaving with unsaved feedback or a draft. The first Ctrl+C in the server also preserves recorded unsaved feedback; save in the browser and stop again. A second Ctrl+C within three seconds explicitly discards it. On stopping, the server prints the last saved feedback file, as the TUI does when it quits. Abrupt termination cannot preserve in-memory feedback or unrecorded drafts.
+Several tabs share one review session; when two tabs edit the same comment, the last recorded edit wins. The browser warns before leaving with unsaved feedback or a draft. The first Ctrl+C in the server also preserves recorded unsaved feedback; save in the browser and stop again. A second Ctrl+C within ten seconds explicitly discards it. On stopping, the server prints the last saved feedback file, as the TUI does when it quits. Abrupt termination cannot preserve in-memory feedback or unrecorded drafts.
 
 ## Git diffs
 

@@ -27,7 +27,7 @@ use std::{
 /// Largest accepted request body.
 const MAX_REQUEST: usize = 64 << 10;
 /// A second Ctrl+C within this window discards unsaved feedback.
-const DISCARD_WINDOW: Duration = Duration::from_secs(3);
+const DISCARD_WINDOW: Duration = Duration::from_secs(10);
 
 const SECURITY_HEADERS: [(&str, &str); 5] = [
     (
