@@ -10,4 +10,5 @@ pub mod git;
 pub mod http;
 pub mod markdown;
 pub mod session;
+pub mod term;
 pub mod tui;

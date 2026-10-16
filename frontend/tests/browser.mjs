@@ -25,8 +25,8 @@ async function server(args, cwd = root) {
   child.stdout.on('data', data => output += data);
   child.stderr.on('data', data => errors += data);
   const deadline = Date.now() + 10000;
-  while (!output.match(/Review is running at (http:\/\/[^\s]+)/) && Date.now() < deadline && child.exitCode === null) await new Promise(r => setTimeout(r, 30));
-  const url = output.match(/Review is running at (http:\/\/[^\s]+)/)?.[1];
+  while (!output.match(/Review at +(http:\/\/[^\s]+)/) && Date.now() < deadline && child.exitCode === null) await new Promise(r => setTimeout(r, 30));
+  const url = output.match(/Review at +(http:\/\/[^\s]+)/)?.[1];
   assert.ok(url, `Server failed: ${errors}`);
   const parsed = new URL(url); const token = new URLSearchParams(parsed.hash.slice(1)).get('token');
   const base = parsed.origin;
@@ -244,7 +244,7 @@ try {
   failed.stop(); await new Promise(r => setTimeout(r, 200)); failed.stop();
   await exited;
   // The path is shown relative to the server's working directory.
-  const named = failed.output().match(/Feedback: (.+)/)?.[1];
+  const named = failed.output().match(/Saved to +(.+)/)?.[1];
   assert.ok(named && lastSave.path.endsWith(`/${named}`), `Stopping names the last saved feedback: ${named}`);
 
   const repo = join(root, 'git'); mkdirSync(repo);

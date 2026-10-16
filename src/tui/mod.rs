@@ -6,7 +6,7 @@ mod text;
 mod theme;
 mod view;
 
-use crate::{files, session::Session};
+use crate::{session::Session, term};
 use anyhow::Result;
 use app::App;
 use ratatui::{
@@ -48,7 +48,7 @@ pub fn run(session: Session) -> Result<()> {
     drop(restore);
     result?;
     if let Some(path) = app.session.last_saved() {
-        println!("Feedback: {}", text::clean(&files::display(path)));
+        term::print_saved(path);
     }
     Ok(())
 }

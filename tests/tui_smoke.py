@@ -159,10 +159,10 @@ def browser_enter(binary, root):
 
     try:
         deadline = time.monotonic() + 8
-        while b'Press Enter' not in output and time.monotonic() < deadline:
+        while b'open in browser' not in output and time.monotonic() < deadline:
             read(0.1)
-        assert b'Press Enter' in output, output
-        url = re.search(rb'http://\S+', output).group().decode()
+        assert b'open in browser' in output, output
+        url = re.search(rb'http://[^\s\x1b]+', output).group().decode()
         read(0.5)
         # SIGTTIN would have stopped the whole server here.
         with urllib.request.urlopen(url.split('#')[0], timeout=3) as response:

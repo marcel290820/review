@@ -3,8 +3,9 @@
 use crate::{
     diff::DiffRow,
     feedback::{Comment, ReviewFile, new_id},
-    files, markdown,
+    markdown,
     session::{DiskState, Session},
+    term,
 };
 use anyhow::Result;
 use axum::{
@@ -94,14 +95,17 @@ pub async fn serve(session: Session, port: u16) -> Result<()> {
     let authority = listener.local_addr()?.to_string();
     let token = new_id();
     let url = format!("http://{authority}/#token={token}");
-    println!("Review is running at {url}");
-    println!("Feedback saves to {}", files::display(session.output()));
     println!();
+    println!("{}", term::row("Review at", &term::link(&url)));
+    println!("{}", term::row("Saves to", &term::path(session.output())));
+    println!();
+    let mut keys = vec![("ctrl+c", "stop")];
     #[cfg(unix)]
     if std::io::stdin().is_terminal() {
         offer_to_open(url);
+        keys.insert(0, ("enter", "open in browser"));
     }
-    println!("Keep this running while you review. Save in the browser, then stop with Ctrl+C.");
+    println!("{}", term::keys(&keys));
     let session = Arc::new(Mutex::new(session));
     let app = router(AppState {
         session: session.clone(),
@@ -117,10 +121,16 @@ pub async fn serve(session: Session, port: u16) -> Result<()> {
         .ok()
         .and_then(|s| s.last_saved().map(|path| path.to_path_buf()));
     if is_dirty(&session) {
-        eprintln!("Discarded unsaved feedback.");
+        eprintln!(
+            "  Discarded {}.",
+            match saved {
+                Some(_) => "changes since the last save",
+                None => "unsaved feedback",
+            }
+        );
     }
     if let Some(path) = saved {
-        println!("Feedback: {}", files::display(&path));
+        term::print_saved(&path);
     }
     Ok(())
 }
@@ -140,8 +150,8 @@ async fn stop_requested(session: Arc<Mutex<Session>>) {
             return;
         }
         eprintln!(
-            "Unsaved feedback. Save it in the browser, then stop again.\n\
-             Press Ctrl+C within 3 seconds to discard it."
+            "  Unsaved feedback. Save in the browser, or press ctrl+c within {}s to discard.",
+            DISCARD_WINDOW.as_secs()
         );
         warned = Some(Instant::now());
     }
@@ -155,15 +165,14 @@ fn offer_to_open(url: String) {
     // on reading the terminal, freezing the server; ignored, the read fails with EIO.
     // SAFETY: setting a signal disposition to SIG_IGN installs no handler code.
     unsafe { libc::signal(libc::SIGTTIN, libc::SIG_IGN) };
-    println!("Press Enter to open the review in your default browser.");
     std::thread::spawn(move || match wait_for_enter(std::io::stdin().lock()) {
         Ok(true) => {
             if let Err(e) = open_url(&url) {
-                eprintln!("Cannot open the browser: {e}. Open the URL above instead.");
+                eprintln!("  Cannot open the browser: {e}. Open the URL above instead.");
             }
         }
         Ok(false) => {}
-        Err(e) => eprintln!("Cannot read Enter: {e}. Open the URL above instead."),
+        Err(e) => eprintln!("  Cannot read Enter: {e}. Open the URL above instead."),
     });
 }
 
